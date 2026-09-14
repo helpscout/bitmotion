@@ -1,0 +1,705 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>BitMotion</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Radio+Canada+Big:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --paper:  #FAF8F7;
+    --yellow: #FFDD99;
+    --coral:  #FF856D;
+    --blue:   #0064F0;
+    --purple: #4B158C;
+    --ink:    #131B24;
+
+    --fg-soft:  #5C6169;
+    --fg-faint: #8B8F96;
+    --rule:     #E6E1DE;
+    --rule-soft:#F0ECEA;
+
+    --sans: "Radio Canada Big", -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, sans-serif;
+    --mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---- stage: the whole point, so it gets the whole viewport width ---- */
+  .stage { width: 100%; background: var(--paper); }
+  #art { display: block; width: 100%; height: 82vh; min-height: 380px; }
+  body.solo .chrome { display: none; }
+  body.solo #art { height: 100vh; }
+
+  .bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 20px;
+    flex-wrap: wrap;
+    padding: 10px 22px;
+    border-bottom: 1px solid var(--rule);
+  }
+  .brand { font-weight: 700; letter-spacing: -0.02em; font-size: 15px; }
+  .readout {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--fg-soft);
+    font-variant-numeric: tabular-nums;
+    display: flex; gap: 14px; flex-wrap: wrap;
+  }
+  .readout b { color: var(--ink); font-weight: 500; }
+
+  .panels {
+    display: grid;
+    grid-template-columns: 1fr 340px;
+    gap: 0;
+    border-top: 1px solid var(--rule);
+  }
+  @media (max-width: 900px) { .panels { grid-template-columns: 1fr; } }
+
+  .console {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 50px 20px;
+    padding: 16px 22px 22px;
+    align-items: start;
+    grid-auto-rows: max-content;
+  }
+  .export {
+    padding: 20px 22px 26px;
+    border-left: 1px solid var(--rule);
+    display: flex; flex-direction: column; gap: 14px;
+  }
+  @media (max-width: 900px) { .export { border-left: 0; border-top: 1px solid var(--rule); } }
+
+  h2 {
+    grid-column: 1 / -1;
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+    margin: 0;
+  }
+  .export h2 { grid-column: auto; }
+
+  .field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .field > label {
+    font-family: var(--mono);
+    font-size: 10px;
+    line-height: 1.3;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+    display: flex; justify-content: space-between; gap: 8px;
+  }
+  .field > label .val {
+    color: var(--ink);
+    letter-spacing: 0; text-transform: none;
+    font-variant-numeric: tabular-nums;
+  }
+  select, button {
+    font-family: var(--sans);
+    font-size: 12.5px;
+    height: 26px;
+    padding: 0 8px;
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    background: #fff;
+    color: var(--ink);
+    width: 100%;
+    cursor: pointer;
+  }
+  /* Matching the select height means a slider row is never inflated by a
+     select sitting beside it. The track centres itself in the box. */
+  input[type=range] {
+    width: 100%;
+    height: 26px;
+    margin: 0;
+    accent-color: var(--blue);
+    cursor: pointer;
+  }
+  select:focus-visible, input:focus-visible, button:focus-visible {
+    outline: 2px solid var(--blue); outline-offset: 2px;
+  }
+  button:hover:not(:disabled) { border-color: var(--fg-faint); }
+  button:disabled { opacity: 0.45; cursor: default; }
+  .row { display: flex; gap: 8px; }
+  .row button { flex: 1; }
+  .check { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; color: var(--fg-soft); }
+
+  #go {
+    background: var(--ink); color: var(--paper);
+    border-color: var(--ink); font-weight: 600; height: 34px;
+  }
+  #go:hover:not(:disabled) { background: #000; }
+
+  .plan {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--fg-soft);
+    font-variant-numeric: tabular-nums;
+    background: #fff;
+    border: 1px solid var(--rule-soft);
+    border-radius: 3px;
+    padding: 9px 11px;
+    line-height: 1.65;
+  }
+  .plan b { color: var(--ink); font-weight: 500; }
+  .track { height: 3px; background: var(--rule-soft); border-radius: 2px; overflow: hidden; }
+  .track i { display: block; height: 100%; width: 0; background: var(--blue); transition: width 0.12s linear; }
+  .status { font-family: var(--mono); font-size: 11px; color: var(--fg-faint); min-height: 1.5em; }
+  .status.warn { color: var(--coral); }
+  .hint { font-size: 12px; color: var(--fg-soft); margin: 0; }
+  pre {
+    margin: 0;
+    padding: 11px 12px;
+    background: #fff;
+    border: 1px solid var(--rule-soft);
+    border-radius: 3px;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: 11px;
+    line-height: 1.65;
+    color: var(--ink);
+    user-select: all;
+  }
+</style>
+</head>
+<body>
+
+<div class="bar chrome">
+  <span class="brand">BitMotion</span>
+  <span class="readout" id="readout"></span>
+</div>
+
+<div class="stage">
+  <canvas id="art"></canvas>
+</div>
+
+<div class="panels chrome">
+
+  <div class="console">
+
+    <div class="field">
+      <label for="mode">Mode</label>
+      <select id="mode">
+        <option value="flow">Flow — never repeats</option>
+        <option value="loop">Loop — exact cycle</option>
+      </select>
+    </div>
+    <!-- HIDDEN: Field picker. Locked to "drift" (the engine default).
+         Uncomment to expose the other fields — the JS is already tolerant of
+         this element being absent, so nothing else needs changing.
+    <div class="field">
+      <label for="scene">Field</label>
+      <select id="scene"></select>
+    </div>
+    -->
+    <div class="field">
+      <label for="ramp">Ramp</label>
+      <select id="ramp"></select>
+    </div>
+    <!-- HIDDEN: Quantiser. Locked to Atkinson diffusion (the engine default,
+         and the one that matches Bitmaker). Uncomment to expose Bayer and
+         nearest-neighbour.
+    <div class="field">
+      <label for="dither">Quantiser</label>
+      <select id="dither">
+        <option value="atkinson">Atkinson diffusion</option>
+        <option value="bayer">Bayer 8×8 ordered</option>
+        <option value="none">Nearest (flat)</option>
+      </select>
+    </div>
+    -->
+    <div class="field">
+      <label for="shape">Falloff</label>
+      <select id="shape">
+        <option value="edges">Edges</option>
+        <option value="radial">Radial</option>
+        <option value="none">Full bleed</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="cell">Block size <span class="val" id="cellV">3px</span></label>
+      <input type="range" id="cell" min="2" max="28" step="1" value="3">
+    </div>
+    <!-- HIDDEN: Cell ceiling (maxCells). Off here, which is right for a
+         design tool on a known machine. It is NOT right for a production
+         page — see the note under the config snippet, and maxCells in
+         README.md. Uncomment to tune it here.
+    <div class="field">
+      <label for="budget">Cell ceiling <span class="val" id="budgetV">off</span></label>
+      <select id="budget">
+        <option value="0">Off — no cap</option>
+        <option value="120000">120k — cautious</option>
+        <option value="200000">200k — recommended</option>
+        <option value="400000">400k — desktop</option>
+      </select>
+    </div>
+    -->
+    <div class="field">
+      <label for="falloff">Falloff reach <span class="val" id="falloffV">0.45</span></label>
+      <input type="range" id="falloff" min="0.05" max="1" step="0.01" value="0.45">
+    </div>
+    <div class="field">
+      <label for="blobs">Blobs <span class="val" id="blobsV">5</span></label>
+      <input type="range" id="blobs" min="0" max="12" step="1" value="5">
+    </div>
+    <div class="field">
+      <label for="morph">Morph <span class="val" id="morphV">0.60</span></label>
+      <input type="range" id="morph" min="0" max="1" step="0.05" value="0.6">
+    </div>
+    <div class="field">
+      <label for="inset">Margin <span class="val" id="insetV">0.04</span></label>
+      <input type="range" id="inset" min="0" max="0.2" step="0.01" value="0.04">
+    </div>
+    <div class="field">
+      <label for="exposure">Exposure <span class="val" id="exposureV">0.00</span></label>
+      <input type="range" id="exposure" min="-0.6" max="0.6" step="0.02" value="0">
+    </div>
+    <div class="field">
+      <label for="contrast">Contrast <span class="val" id="contrastV">1.00</span></label>
+      <input type="range" id="contrast" min="0.3" max="2.4" step="0.05" value="1">
+    </div>
+    <div class="field">
+      <label for="revolve">Revolve <span class="val" id="revolveV">1 turn</span></label>
+      <input type="range" id="revolve" min="0" max="4" step="1" value="1">
+    </div>
+    <div class="field">
+      <label for="speed">Cycle <span class="val" id="speedV">14s</span></label>
+      <input type="range" id="speed" min="4" max="40" step="1" value="14">
+    </div>
+    <div class="field">
+      <label for="fps">Frame cap <span class="val" id="fpsV">20</span></label>
+      <input type="range" id="fps" min="6" max="30" step="1" value="20">
+    </div>
+    <div class="field">
+      <label>Composition</label>
+      <div class="row">
+        <button id="shuffle" type="button">Shuffle</button>
+        <button id="toggle" type="button">Pause</button>
+      </div>
+    </div>
+    <div class="field">
+      <label>View</label>
+      <button id="solo" type="button">Hide controls</button>
+    </div>
+  </div>
+
+  <div class="export">
+    <h2>Export this loop</h2>
+    <p class="hint">
+      Block size, cycle length and frame rate come from the console — only the
+      output size and format are set here.
+    </p>
+
+    <div class="field">
+      <label for="fmt">Format</label>
+      <select id="fmt">
+        <option value="gif">GIF — lossless, transparent</option>
+        <option value="video">Video — crisp (WebM)</option>
+        <option value="video-mp4">Video — MP4 (lossy)</option>
+        <option value="png">PNG sequence — lossless, alpha</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="dim">Size</label>
+      <select id="dim">
+        <option value="1920x1080">1920 × 1080 — HD landscape</option>
+        <option value="1080x1080">1080 × 1080 — square</option>
+        <option value="1080x1920">1080 × 1920 — vertical</option>
+        <option value="1280x720">1280 × 720 — HD small</option>
+        <option value="2560x1440">2560 × 1440 — 2K</option>
+        <option value="3840x2160">3840 × 2160 — 4K</option>
+      </select>
+    </div>
+
+    <label class="check"><input type="checkbox" id="extrans" checked> Transparent background</label>
+
+    <div class="plan" id="plan"></div>
+    <button id="go" type="button">Render &amp; download</button>
+    <div class="track"><i id="prog"></i></div>
+    <div class="status" id="status">Exports the look on screen as an exact loop.</div>
+
+    <h2 style="margin-top:10px">Use on the web</h2>
+    <p class="hint">
+      Shuffle until you like a composition, then paste this. The seed pins it —
+      without one you get a different composition on every load. Add
+      <code>maxCells: 200000</code> by hand before this goes on a live page;
+      see README.md.
+    </p>
+    <pre id="snippet"></pre>
+    <button id="copy" type="button">Copy config</button>
+  </div>
+
+</div>
+
+<script src="bitmotion.js"></script>
+<script src="bitmotion-export.js"></script>
+<script>
+(function () {
+  var art = document.getElementById("art");
+  var bm = BitMotion.create({ canvas: art, cellSize: 3, mode: "flow", fps: 20, scene: "drift" });
+
+  /* ---------------- look controls ---------------- */
+
+  // Several controls are commented out of the markup below. Everything that
+  // touches the DOM therefore checks first, so putting one back is a
+  // markup-only edit — no matching JS to remember.
+  var sceneSel = document.getElementById("scene");
+  if (sceneSel) {
+    BitMotion.SCENES.forEach(function (n) {
+      var o = document.createElement("option");
+      o.value = n;
+      o.textContent = n.charAt(0).toUpperCase() + n.slice(1);
+      sceneSel.appendChild(o);
+    });
+    var cycle = document.createElement("option");
+    cycle.value = ""; cycle.textContent = "Cycle all";
+    sceneSel.appendChild(cycle);
+    sceneSel.value = "drift";
+  }
+
+  var rampSel = document.getElementById("ramp");
+  Object.keys(BitMotion.RAMPS).forEach(function (n) {
+    var o = document.createElement("option");
+    o.value = n;
+    o.textContent = n.charAt(0).toUpperCase() + n.slice(1);
+    rampSel.appendChild(o);
+  });
+  rampSel.value = "dissolve";
+
+  ["mode", "scene", "ramp", "dither", "shape"].forEach(function (id) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener("change", function () { bm.setOption(id, el.value || null); });
+  });
+
+  function range(id, key, fmt, extra) {
+    var el = document.getElementById(id);
+    var out = document.getElementById(id + "V");
+    if (!el) return;
+    el.addEventListener("input", function () {
+      var v = parseFloat(el.value);
+      out.textContent = fmt(v);
+      if (key) bm.setOption(key, v);
+      if (extra) extra(v);
+    });
+  }
+  var cellEl = document.getElementById("cell");
+  var cellOut = document.getElementById("cellV");
+  cellEl.addEventListener("input", function () {
+    var v = parseInt(cellEl.value, 10);
+    cellOut.textContent = v + "px";
+    bm.setOption("cellSize", v);
+  });
+  range("falloff", "falloff", function (v) { return v.toFixed(2); });
+  range("inset", "inset", function (v) { return v.toFixed(2); });
+  range("morph", "morph", function (v) { return v.toFixed(2); });
+  // Changing the count rebuilds the composition, so the seed is re-rolled
+  // into a new arrangement rather than the old one gaining a blob.
+  range("blobs", "blobs", function (v) { return v; });
+  range("exposure", "exposure", function (v) { return v.toFixed(2); });
+  range("contrast", "contrast", function (v) { return v.toFixed(2); });
+  range("fps", "fps", function (v) { return v; });
+  // Whole turns only: half a turn would leave the composition upside down at
+  // the loop seam.
+  range("revolve", "revolve", function (v) { return v === 0 ? "off" : v + (v === 1 ? " turn" : " turns"); });
+  range("speed", "loopSeconds", function (v) { return v + "s"; }, function (v) {
+    bm.setOption("sceneSeconds", v * 0.8);
+  });
+
+  // maxCells is the production guardrail: it grows the block size until the
+  // grid fits the ceiling, so frame cost stops tracking viewport width.
+  var budgetEl = document.getElementById("budget");
+  if (budgetEl) budgetEl.addEventListener("change", function () {
+    var v = parseInt(budgetEl.value, 10);
+    document.getElementById("budgetV").textContent = v ? (v / 1000) + "k" : "off";
+    bm.setOption("maxCells", v);
+  });
+
+  document.getElementById("shuffle").addEventListener("click", function () { bm.reseed(); });
+
+  var toggle = document.getElementById("toggle");
+  toggle.addEventListener("click", function () {
+    if (bm.running) { bm.pause(); toggle.textContent = "Play"; }
+    else { bm.play(); toggle.textContent = "Pause"; }
+  });
+
+  var solo = document.getElementById("solo");
+  solo.addEventListener("click", function () {
+    document.body.classList.toggle("solo");
+    var hidden = document.body.classList.contains("solo");
+    solo.textContent = hidden ? "Show controls" : "Hide controls";
+    // The canvas changed size, so the grid has to be re-derived.
+    setTimeout(function () { bm._resize(); }, 0);
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && document.body.classList.contains("solo")) solo.click();
+  });
+
+  /* ---------------- live readout ---------------- */
+
+  var readout = document.getElementById("readout");
+  var frames = 0, sum = 0, since = performance.now();
+  var render = bm._render.bind(bm);
+  bm._render = function (t) {
+    var a = performance.now();
+    render(t);
+    sum += performance.now() - a;
+    frames++;
+  };
+  setInterval(function () {
+    var now = performance.now();
+    var fps = frames / ((now - since) / 1000);
+    var ms = frames ? sum / frames : 0;
+    readout.innerHTML =
+      "<span><b>" + bm.gw + "×" + bm.gh + "</b> grid</span>" +
+      "<span><b>" + (bm.gw * bm.gh).toLocaleString() + "</b> cells</span>" +
+      "<span><b>" + bm.cell + "×" + bm.cell + "px</b> blocks</span>" +
+      "<span><b>" + ms.toFixed(2) + "</b> ms/frame</span>" +
+      "<span><b>" + fps.toFixed(0) + "</b> fps</span>" +
+      "<span>" + (bm.sceneName || "—") + "</span>" +
+      "<span>seed <b>" + bm.rndSeed + "</b></span>";
+    frames = 0; sum = 0; since = now;
+  }, 500);
+
+  /* ---------------- production snippet ---------------- */
+
+  // Only the options that actually differ from the engine defaults, so the
+  // snippet stays readable instead of restating the whole config object.
+  var SNIPPET_KEYS = ["scene", "ramp", "mode", "dither", "shape", "falloff",
+                      "cellSize", "maxCells", "revolve", "inset", "morph",
+                      "blobs", "exposure", "contrast", "loopSeconds", "fps"];
+  var DEFAULTS_FOR_SNIPPET = {
+    scene: "drift", ramp: "dissolve", mode: "flow", dither: "atkinson",
+    shape: "edges", falloff: 0.45, cellSize: 3, maxCells: 0,
+    revolve: 1, inset: 0.04, morph: 0.6, blobs: 5, exposure: 0, contrast: 1,
+    loopSeconds: 14, fps: 20
+  };
+  var snippetBox = document.getElementById("snippet");
+
+  function refreshSnippet() {
+    var lines = ['  canvas: "#hero",'];
+    SNIPPET_KEYS.forEach(function (k) {
+      var v = bm.o[k];
+      if (v === DEFAULTS_FOR_SNIPPET[k]) return;
+      lines.push("  " + k + ": " + (typeof v === "string" ? '"' + v + '"' : v) + ",");
+    });
+    lines.push("  seed: " + bm.rndSeed);
+    snippetBox.textContent =
+      "BitMotion.create({\n" + lines.join("\n") + "\n});";
+  }
+  refreshSnippet();
+
+  // The export plan now mirrors the console, so it has to follow console
+  // edits — but recomputing it on a timer regardless would rebuild an
+  // offscreen engine every tick. Gate it on a signature of the values it
+  // actually depends on.
+  var planSig = "";
+  function syncPlan() {
+    var sig = [bm.o.cellSize, bm.o.loopSeconds, bm.o.fps, dimSel.value,
+               fmtSel.value, transChk.checked, bm.cell].join("|");
+    if (sig === planSig) return;
+    planSig = sig;
+    refreshPlan();
+  }
+  setInterval(function () { refreshSnippet(); syncPlan(); }, 600);
+
+  var copyBtn = document.getElementById("copy");
+  copyBtn.addEventListener("click", function () {
+    var text = snippetBox.textContent;
+    var done = function () {
+      copyBtn.textContent = "Copied";
+      setTimeout(function () { copyBtn.textContent = "Copy config"; }, 1400);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, selectInstead);
+    } else {
+      selectInstead();
+    }
+    // Clipboard writes are blocked in some embedded contexts; selecting the
+    // text at least leaves it one keystroke away.
+    function selectInstead() {
+      var r = document.createRange();
+      r.selectNodeContents(snippetBox);
+      var sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(r);
+      copyBtn.textContent = "Press ⌘C";
+      setTimeout(function () { copyBtn.textContent = "Copy config"; }, 2200);
+    }
+  });
+
+  /* ---------------- export ---------------- */
+
+  var fmtSel = document.getElementById("fmt");
+  var dimSel = document.getElementById("dim");
+  var transChk = document.getElementById("extrans");
+  var planBox = document.getElementById("plan");
+  var statusBox = document.getElementById("status");
+  var progBar = document.getElementById("prog");
+  var goBtn = document.getElementById("go");
+
+  // Label each video row with the codec actually available here, so the
+  // choice is explicit rather than a silent pick.
+  var crispLabel = BitMotionExport.videoLabel();
+  var compatLabel = BitMotionExport.videoLabel("compatible");
+  var crispOpt = fmtSel.querySelector('option[value="video"]');
+  var compatOpt = fmtSel.querySelector('option[value="video-mp4"]');
+  if (!crispLabel) {
+    crispOpt.disabled = true;
+    compatOpt.disabled = true;
+  } else {
+    crispOpt.textContent = "Video — " + crispLabel + " (crisp)";
+    compatOpt.textContent = "Video — " + compatLabel + " (lossy)";
+  }
+
+  // The export takes its block size, loop length and frame rate straight from
+  // the console. There is one set of settings, and what you tuned on screen is
+  // what gets rendered — only the output dimensions and the file format are
+  // export-specific.
+  function exportOpts() {
+    var dims = dimSel.value.split("x");
+    return {
+      options: bm.o,
+      seed: bm.rndSeed,
+      width: parseInt(dims[0], 10),
+      height: parseInt(dims[1], 10),
+      cellSize: bm.o.cellSize > 0 ? bm.o.cellSize : Math.max(2, bm.cell),
+      seconds: bm.o.loopSeconds,
+      fps: bm.o.fps,
+      transparent: transChk.checked,
+      codec: fmtSel.value === "video-mp4" ? "compatible" : "crisp"
+    };
+  }
+
+  function refreshPlan() {
+    var o = exportOpts();
+    var fmt = fmtSel.value;
+    var isVideo = (fmt === "video" || fmt === "video-mp4");
+    // Video codecs carry no alpha, so the checkbox is meaningless there.
+    transChk.disabled = isVideo;
+    var p;
+    try { p = BitMotionExport.plan(o); }
+    catch (err) { planBox.textContent = "—"; return; }
+
+    var exact = (p.width === o.width && p.height === o.height);
+
+    // A GIF frame delay is a whole number of centiseconds, so not every frame
+    // rate is exactly representable. Say so rather than quietly playing back
+    // at a different speed than the console shows.
+    var rateNote = "";
+    if (fmt === "gif") {
+      var delayCs = Math.max(2, Math.round(100 / o.fps));
+      var actual = 100 / delayCs;
+      if (Math.abs(actual - o.fps) > 0.05) {
+        rateNote = " → plays at " + actual.toFixed(1);
+      }
+    }
+
+    var lines = [
+      "<b>" + p.width + " × " + p.height + "</b>" + (exact ? "" : " (snapped from " + o.width + "×" + o.height + ")"),
+      "<b>" + p.grid + "</b> grid · <b>" + p.cell + "px</b> blocks · " + p.colors + " colors",
+      "<b>" + p.frames + "</b> frames · <b>" + o.seconds + "s</b> · " + o.fps + " fps" + rateNote
+    ];
+    planBox.innerHTML = lines.join("<br>");
+
+    // Set expectations honestly: each format has a different failure mode at
+    // scale — GIF gets heavy, video runs in real time, PNG piles up files.
+    var px = p.width * p.height;
+    var note = "";
+    if (fmt === "gif") {
+      var est = px * p.frames * 0.03 / 1048576;
+      note = "≈" + est.toFixed(0) + " MB, a few seconds to encode.";
+      if (est > 40) note += " Shorten the loop or drop the size for web use.";
+    } else if (isVideo) {
+      note = "Records in real time — about " + o.seconds + "s. Opaque paper background. " +
+        (fmt === "video-mp4"
+          ? "H.264 visibly softens these edges; use WebM or PNG if that matters."
+          : "Cleanest video option, though still not lossless.");
+    } else {
+      note = p.frames + " PNG files with alpha, for Premiere or After Effects.";
+    }
+    statusBox.className = "status";
+    statusBox.textContent = note;
+  }
+
+  ["fmt", "dim"].forEach(function (id) {
+    var el = document.getElementById(id);
+    el.addEventListener("input", refreshPlan);
+    el.addEventListener("change", refreshPlan);
+  });
+  transChk.addEventListener("change", refreshPlan);
+  refreshPlan();
+
+  function stamp(ext) {
+    var d = new Date();
+    var pad = function (n) { return String(n).padStart(2, "0"); };
+    // sceneName can read "drift (crossfade)", which strips to
+    // "driftcrossfade" — use the field name itself for the filename.
+    var field = bm.o.scene || String(bm.sceneName || "loop").split(" ")[0];
+    return "bitmotion-" + field.replace(/[^a-z0-9]/gi, "") + "-" +
+      pad(d.getMonth() + 1) + pad(d.getDate()) + "-" + pad(d.getHours()) + pad(d.getMinutes()) + "." + ext;
+  }
+
+  goBtn.addEventListener("click", async function () {
+    var o = exportOpts();
+    var fmt = fmtSel.value;
+    var wasRunning = bm.running;
+    // The exporter is CPU-bound; leaving the preview running just steals from it.
+    bm.pause();
+
+    goBtn.disabled = true;
+    progBar.style.width = "0%";
+    statusBox.className = "status";
+    statusBox.textContent = "Rendering…";
+
+    o.onProgress = function (p, i, n) {
+      progBar.style.width = (p * 100).toFixed(1) + "%";
+      statusBox.textContent = "Frame " + i + " of " + n + "…";
+    };
+
+    try {
+      var blob, name;
+      if (fmt === "gif") {
+        blob = await BitMotionExport.gif(o);
+        name = stamp("gif");
+      } else if (fmt === "video" || fmt === "video-mp4") {
+        var res = await BitMotionExport.video(o);
+        blob = res.blob;
+        name = stamp(res.ext);
+      } else {
+        blob = await BitMotionExport.pngSequence(o);
+        name = stamp("zip");
+      }
+
+      statusBox.textContent = "Saving " + (blob.size / 1048576).toFixed(1) + " MB…";
+      var outcome = await BitMotionExport.save(name, blob);
+      statusBox.textContent = outcome === "declined"
+        ? "Save cancelled."
+        : name + " · " + (blob.size / 1048576).toFixed(1) + " MB";
+    } catch (err) {
+      statusBox.className = "status warn";
+      statusBox.textContent = "Export failed: " + (err && err.message ? err.message : String(err));
+    } finally {
+      goBtn.disabled = false;
+      progBar.style.width = "0%";
+      if (wasRunning) bm.play();
+    }
+  });
+})();
+</script>
+</body>
+</html>

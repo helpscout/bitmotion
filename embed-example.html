@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>BitMotion — production embed</title>
+
+<!--
+  The whole production integration. bitmotion.js is the only file you need:
+  bitmotion-export.js is the GIF/video tooling and has no place on a live page.
+
+  Six things matter here:
+    1. The canvas is sized entirely by CSS. The engine reads its rendered box
+       and re-derives the grid on resize, so you never set width/height
+       attributes yourself.
+
+    2. `cellSize` is the sizing control: every block is exactly that many
+       OUTPUT pixels, the same physical chunk at any canvas size. There is a
+       `resolution` option too, used only if you set `cellSize: 0`, which
+       fixes the cell COUNT instead — worth knowing for a responsive hero,
+       since it keeps the composition identical at every breakpoint while
+       blocks grow on bigger screens.
+
+    3. `maxCells` is the guardrail, and on a page you do not control the
+       hardware for, it is the difference between safe and not. Frame cost is
+       almost exactly linear in cell count, so a cell ceiling is a cost
+       ceiling: the engine grows the block size until the grid fits. Without
+       it, `cellSize: 2` on an ultrawide monitor is 2.1M cells and ~70ms a
+       frame — a long task, every frame, flagged by Core Web Vitals. With
+       200k it holds near 6ms at any width, coarsening the blocks instead.
+    4. `seed` pins the composition. Without it every page load composes
+       something different — fine for an ambient background, wrong if you want
+       the same artwork every time. Get the number from the playground's
+       readout, or its "Copy config" button. Note that the seed also drives
+       the silhouette, so a shuffle moves where the dense mass sits — which is
+       why the copy here has its own column rather than sitting on top.
+    5. `revolve` turns the whole composition as it plays, so the colours
+       travel around the frame instead of staying in the corners they started
+       in. Whole turns only — a fraction would not close the loop.
+    6. Paper-coloured cells are written with alpha 0, so the canvas is
+       genuinely transparent and inherits whatever is behind it. Nothing needs
+       to be #FAF8F7 for this to work — that is just where it was tuned.
+-->
+
+<style>
+  body {
+    margin: 0;
+    background: #FAF8F7;
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, sans-serif;
+    color: #131B24;
+  }
+
+  /* Copy beside the artwork, not on top of it. The canvas is transparent, so
+     overlaying text is technically easy — but the composition is dense and
+     high-contrast in the middle, and body copy loses that fight every time.
+     Giving each its own column is the layout that actually survives a
+     shuffle, since you cannot predict where the dark mass lands. */
+  .hero {
+    display: grid;
+    grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+    align-items: center;
+    gap: 32px;
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 48px 24px 24px;
+  }
+  @media (max-width: 800px) {
+    .hero { grid-template-columns: 1fr; gap: 8px; padding-top: 32px; }
+    .hero-copy { order: -1; }
+  }
+
+  /* Size the canvas with CSS and nothing else. */
+  .hero canvas {
+    display: block;
+    width: 100%;
+    height: 460px;
+  }
+  @media (max-width: 800px) {
+    .hero canvas { height: 300px; }
+  }
+
+  .hero-copy {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+  .hero-copy h1 {
+    font-size: clamp(30px, 5vw, 56px);
+    line-height: 1.05;
+    letter-spacing: -0.03em;
+    margin: 0 0 12px;
+    max-width: 16ch;
+    text-wrap: balance;
+  }
+  .hero-copy p { margin: 0; max-width: 42ch; color: #5C6169; }
+
+  main { max-width: 640px; margin: 0 auto; padding: 40px 24px 80px; }
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.87em;
+    background: rgba(19, 27, 36, 0.06);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <div class="hero-copy">
+    <h1>Every conversation, in one place</h1>
+    <p>Shared inboxes, help centre and live chat — without the enterprise overhead.</p>
+  </div>
+  <canvas id="hero"></canvas>
+</div>
+
+<main>
+  <p>
+    The artwork above is generated in the browser with <code>3x3</code> pixel
+    blocks, capped at 200,000 cells — the cap coarsens the blocks on a wide
+    viewport rather than letting the frame cost grow with it. There is no image, no video and no
+    request — just <code>bitmotion.js</code>, about
+    <strong>15.6KB</strong> over the wire once your server gzips it.
+  </p>
+  <p>
+    It holds still for <code>prefers-reduced-motion</code> and stops rendering
+    entirely once it scrolls out of view, so it costs nothing while someone
+    reads the rest of the page. At this setting a frame costs around 5ms, so
+    even on hardware several times slower than a laptop it stays well clear of
+    the 50ms long-task threshold.
+  </p>
+</main>
+
+<script src="bitmotion.js"></script>
+<script>
+  BitMotion.create({
+    canvas: "#hero",
+
+    scene: "drift",       // the field: drift | waves | bloom | ribbon | nebula
+    ramp: "dissolve",     // dissolve | bleed | warm | cool | duo | ink
+    mode: "flow",         // "flow" never repeats; "loop" is an exact cycle
+    revolve: 1,           // whole turns per loop; 0 pins the orientation
+    blobs: 5,             // 0-12 orbiting blobs; more separates into islands
+    inset: 0.04,          // reserved paper margin, so nothing touches the edge
+    morph: 0.6,           // how much the outline breathes and squishes; 0 freezes it
+    fps: 20,
+
+    cellSize: 3,          // blocks exactly 3x3 output pixels
+    // resolution: 200,   // alternative sizing; needs cellSize: 0
+
+    // Cost ceiling. Keep this on in production.
+    maxCells: 200000,
+
+    // Pin the composition. Drop this line for something new on every load.
+    seed: 1834027461
+  });
+</script>
+</body>
+</html>
