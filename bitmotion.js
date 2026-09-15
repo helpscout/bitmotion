@@ -117,6 +117,32 @@
   // blocks. Anything hoistable belongs in prep.
   var SCENES = {};
 
+  // Everything that moves is driven by one clock: `phase`, which advances by
+  // 1 every `loopSeconds`. "loop" mode needs the seam to close, so every rate
+  // in it has to be a WHOLE number of cycles per loop. The catch is that a set
+  // of whole-number rates shares a common period — the loop itself — so the
+  // entire animation is exactly periodic at `loopSeconds`. Watch one loop and
+  // you have seen all of it, which is what makes a long look read as a short
+  // tape on repeat.
+  //
+  // "flow" mode never has to close. `detuner` returns a function that leaves
+  // rates alone in "loop" mode and does two things to them in "flow" mode.
+  //
+  // First, one TEMPO for the whole composition. Without it every composition
+  // moves at the same pace: the shapes change every ten seconds but the speed
+  // never does, so the piece has one gear and reads as the same event over and
+  // over. Drawing a tempo per composition means some drift and some churn.
+  //
+  // Second, a per-rate DETUNE on top. Detuned rates share no common period, so
+  // the parts of one composition drift in and out of phase with each other
+  // instead of locking into formation and repeating. +-17% is enough: a pair
+  // of 1-turn rates at 0.9 and 1.1 beat against each other over ten loops.
+  function detuner(opts, rnd) {
+    if (opts && opts.mode === "loop") return function (turns) { return turns; };
+    var tempo = 0.55 + rnd() * 1.05;
+    return function (turns) { return turns * tempo * (1 + (rnd() - 0.5) * 0.34); };
+  }
+
   // Slow diagonal wash with orbiting soft blobs. The house style.
   SCENES.drift = function (p, rnd, opts) {
     // Two things decide whether a composition reads as bands or as islands.
@@ -131,11 +157,12 @@
     // So each composition picks a balance: gradient-led ones keep the classic
     // Bitmaker banding, blob-led ones weaken the gradient until the blobs
     // carry the frame and the colour separates into islands.
+    var det = detuner(opts, rnd);
     var blobLed = rnd() < 0.5;
     var ang = rnd() * TAU;
     var gx = Math.cos(ang), gy = Math.sin(ang);
     var gain = blobLed ? (0.30 + rnd() * 0.45) : (1.0 + rnd() * 0.8);
-    var sweep = TAU * (1 + (rnd() * 2 | 0)) * (rnd() < 0.5 ? -1 : 1);
+    var sweep = TAU * det((1 + (rnd() * 2 | 0)) * (rnd() < 0.5 ? -1 : 1));
     var sweepAmt = 0.10 + rnd() * 0.16;
 
     var want = opts && opts.blobs != null ? opts.blobs : 5;
@@ -145,6 +172,11 @@
     var rx = new Float64Array(n), ry = new Float64Array(n);
     var kk = new Float64Array(n), ph = new Float64Array(n);
     var ww = new Float64Array(n), inv = new Float64Array(n);
+    // Epicycle: a second, smaller circle riding on the first.
+    var k2 = new Float64Array(n), ph2 = new Float64Array(n), ep = new Float64Array(n);
+    // Slow breathing of the orbit's own size.
+    var bk = new Float64Array(n), bp = new Float64Array(n);
+    var BREATHE = 0.22;
     for (var i = 0; i < n; i++) {
       cx[i] = 0.08 + rnd() * 0.84;
       cy[i] = 0.08 + rnd() * 0.84;
@@ -153,8 +185,25 @@
       // Direction is drawn per blob rather than alternating by index, and
       // speeds run 1-3 turns, so blobs cross each other instead of holding
       // formation. Whole turns keep the loop closed.
-      kk[i] = (rnd() < 0.5 ? -1 : 1) * (1 + (rnd() * 3 | 0));
+      kk[i] = det((rnd() < 0.5 ? -1 : 1) * (1 + (rnd() * 3 | 0)));
       ph[i] = rnd();
+      // One circle traced at a constant rate is the most predictable path
+      // there is: once you have watched a blob round the top you know the
+      // rest. A faster epicycle turning the other way makes the same blob
+      // loop, stall and swing wide, and breathing the orbit stops it
+      // retracing the same ellipse on the next pass. Both are still whole
+      // cycles, so "loop" mode still closes.
+      k2[i] = det((rnd() < 0.5 ? -1 : 1) * (2 + (rnd() * 4 | 0)));
+      ph2[i] = rnd();
+      ep[i] = 0.12 + rnd() * 0.30;
+      bk[i] = det((rnd() < 0.5 ? -1 : 1) * (1 + (rnd() * 2 | 0)));
+      bp[i] = rnd();
+      // The epicycle and the breathing both ADD excursion, so the orbit is
+      // scaled back by their combined peak. Without this the blobs would
+      // simply swing further off-frame and spend more of the loop invisible.
+      var norm = 1 / ((1 + ep[i]) * (1 + BREATHE));
+      rx[i] *= norm;
+      ry[i] *= norm;
       // Heavier than before, and signed, so a blob can carve a hole as
       // readily as it can pile up a peak.
       ww[i] = (rnd() < 0.5 ? -1 : 1) * (blobLed ? 0.45 + rnd() * 0.75
@@ -173,8 +222,10 @@
         base = 0.5 + Math.sin(phase * sweep) * sweepAmt;
         for (var i = 0; i < n; i++) {
           var a = TAU * (phase * kk[i] + ph[i]);
-          bx[i] = cx[i] + Math.cos(a) * rx[i];
-          by[i] = cy[i] + Math.sin(a) * ry[i];
+          var a2 = TAU * (phase * k2[i] + ph2[i]);
+          var br = 1 + Math.sin(TAU * (phase * bk[i] + bp[i])) * BREATHE;
+          bx[i] = cx[i] + (Math.cos(a) + Math.cos(a2) * ep[i]) * rx[i] * br;
+          by[i] = cy[i] + (Math.sin(a) + Math.sin(a2) * ep[i]) * ry[i] * br;
         }
       },
       at: function (x, y) {
@@ -190,7 +241,8 @@
   };
 
   // Interference of a handful of plane waves — rippling moire bands.
-  SCENES.waves = function (p, rnd) {
+  SCENES.waves = function (p, rnd, opts) {
+    var det = detuner(opts, rnd);
     var n = 3 + (rnd() * 3 | 0);
     var kx = new Float64Array(n), ky = new Float64Array(n);
     var w = new Float64Array(n), ph0 = new Float64Array(n);
@@ -200,7 +252,7 @@
       var freq = (1.2 + rnd() * 3.4) * TAU;
       kx[i] = Math.cos(ang) * freq;
       ky[i] = Math.sin(ang) * freq;
-      w[i] = TAU * (1 + (rnd() * 3 | 0)) * (rnd() < 0.5 ? -1 : 1);
+      w[i] = TAU * det((1 + (rnd() * 3 | 0)) * (rnd() < 0.5 ? -1 : 1));
       ph0[i] = rnd() * TAU;
     }
     var off = new Float64Array(n);
@@ -218,21 +270,35 @@
   };
 
   // Concentric pulse radiating from an off-centre origin.
-  SCENES.bloom = function (p, rnd) {
+  SCENES.bloom = function (p, rnd, opts) {
+    var det = detuner(opts, rnd);
     var cx = 0.3 + rnd() * 0.4, cy = 0.3 + rnd() * 0.4;
     var rings = (0.9 + rnd() * 1.3) * TAU;
-    var speed = TAU * (1 + (rnd() * 2 | 0)) * (rnd() < 0.4 ? -1 : 1);
+    var speed = TAU * det((1 + (rnd() * 2 | 0)) * (rnd() < 0.4 ? -1 : 1));
     var squash = 0.7 + rnd() * 0.6;
     var wobK = 2 + (rnd() * 3 | 0);
-    var spin = 0, drift = 0;
+    var spinK = det(1);
+    // A pulse radiating from a pinned origin is a bullseye: the rings move
+    // but the centre never does, and the eye locks onto it. Wandering the
+    // origin on two mismatched cycles keeps the source itself travelling,
+    // so the same rings sweep the frame from a different place each pass.
+    var wanK = det((rnd() < 0.5 ? -1 : 1) * (1 + (rnd() * 2 | 0)));
+    var wanK2 = det((rnd() < 0.5 ? -1 : 1) * (2 + (rnd() * 3 | 0)));
+    var wanP = rnd(), wanP2 = rnd();
+    var wanR = 0.05 + rnd() * 0.11;
+    var spin = 0, drift = 0, ox = cx, oy = cy;
 
     return {
       prep: function (phase) {
-        spin = phase * TAU;
+        spin = phase * TAU * spinK;
         drift = phase * speed;
+        ox = cx + (Math.cos(TAU * (phase * wanK + wanP)) * 0.7 +
+                   Math.cos(TAU * (phase * wanK2 + wanP2)) * 0.3) * wanR;
+        oy = cy + (Math.sin(TAU * (phase * wanK + wanP)) * 0.7 +
+                   Math.sin(TAU * (phase * wanK2 + wanP2)) * 0.3) * wanR;
       },
       at: function (x, y) {
-        var dx = x - cx, dy = (y - cy) * squash;
+        var dx = x - ox, dy = (y - oy) * squash;
         var d = Math.sqrt(dx * dx + dy * dy);
         var wob = Math.sin(Math.atan2(dy, dx) * wobK + spin) * 0.06;
         return 0.5 + Math.sin((d + wob) * rings - drift) * 0.42 * (1 - d * 0.5);
@@ -241,24 +307,32 @@
   };
 
   // Wide diagonal bands warped by a slow sine — sweeping ribbons of colour.
-  SCENES.ribbon = function (p, rnd) {
+  SCENES.ribbon = function (p, rnd, opts) {
+    var det = detuner(opts, rnd);
     var ang = rnd() * TAU;
     var gx = Math.cos(ang), gy = Math.sin(ang);
     var bands = (0.5 + rnd() * 0.9) * TAU;
     var warpK = (1 + rnd() * 2.5) * TAU;
     var warpAmt = 0.12 + rnd() * 0.22;
-    var drift = TAU * (1 + (rnd() * 2 | 0));
-    var wp = 0, dp = 0;
+    var drift = TAU * det(1 + (rnd() * 2 | 0));
+    var warpRate = det(1);
+    // Bands of a fixed width sliding at a fixed rate are a conveyor belt.
+    // Breathing the spacing makes them crowd and open out as they travel,
+    // which reads as the ribbon turning towards and away from you.
+    var spreadK = det((rnd() < 0.5 ? -1 : 1) * (1 + (rnd() * 2 | 0)));
+    var spreadP = rnd(), spreadAmt = 0.12 + rnd() * 0.16;
+    var wp = 0, dp = 0, bandsNow = bands;
 
     return {
       prep: function (phase) {
-        wp = phase * TAU;
+        wp = phase * TAU * warpRate;
         dp = phase * drift;
+        bandsNow = bands * (1 + Math.sin(TAU * (phase * spreadK + spreadP)) * spreadAmt);
       },
       at: function (x, y) {
         var u = x * gx + y * gy;
         var warp = Math.sin((x * 0.6 - y) * warpK + wp) * warpAmt;
-        return 0.5 + Math.sin((u + warp) * bands - dp) * 0.45;
+        return 0.5 + Math.sin((u + warp) * bandsNow - dp) * 0.45;
       }
     };
   };
@@ -266,20 +340,27 @@
   // Layered blobs plus a counter-rotating swirl — the busiest of the four.
   SCENES.nebula = function (p, rnd, opts) {
     var inner = SCENES.drift(p, rnd, opts);
+    var det = detuner(opts, rnd);
     var swirlK = (1 + rnd() * 2) * TAU;
-    var spinRate = TAU * (1 + (rnd() * 2 | 0));
-    var spin = 0;
+    var spinRate = TAU * det((1 + (rnd() * 2 | 0)) * (rnd() < 0.35 ? -1 : 1));
+    var arms = 2 + (rnd() * 2 | 0);
+    // The swirl's own winding loosens and tightens, so the arms do not just
+    // sweep past at a constant rate like a radar hand.
+    var windK = det((rnd() < 0.5 ? -1 : 1) * (1 + (rnd() * 2 | 0)));
+    var windP = rnd();
+    var spin = 0, wind = swirlK;
 
     return {
       prep: function (phase) {
         inner.prep(phase);
         spin = phase * spinRate;
+        wind = swirlK * (1 + Math.sin(TAU * (phase * windK + windP)) * 0.3);
       },
       at: function (x, y) {
         var dx = x - 0.5, dy = y - 0.5;
         var r = Math.sqrt(dx * dx + dy * dy);
         var th = Math.atan2(dy, dx);
-        return inner.at(x, y) + Math.sin(th * 2 + r * swirlK - spin) * 0.22 * (1 - r);
+        return inner.at(x, y) + Math.sin(th * arms + r * wind - spin) * 0.22 * (1 - r);
       }
     };
   };
@@ -490,8 +571,40 @@
     return { name: name, scene: SCENES[name](n, rnd, this.o) };
   };
 
+  // How long composition `n` holds the screen, in seconds. Equal-length
+  // compositions turn the cut itself into a metronome: after two of them you
+  // know when the next one lands, which makes the whole piece feel
+  // scheduled. Lengths are drawn per composition — deterministically from
+  // the seed, so a given seed still replays identically — and run from 0.7x
+  // to 1.5x of `sceneSeconds`, floored at the crossfade so a short
+  // composition is never over before it has finished arriving.
+  BitMotionInstance.prototype._spanFor = function (n, base) {
+    if (this.o.mode === "loop") return base;
+    var r = makeRandom((this.rndSeed ^ 0x2545f491) + n * 0x9e3779b1)();
+    return Math.max(this.o.crossfade + 0.5, base * (0.7 + r * 0.8));
+  };
+
+  // Walks composition boundaries forward to find the one containing `time`.
+  // Variable spans mean the boundary is no longer a division, so the walk is
+  // incremental: it advances by at most one composition per frame in normal
+  // playback and only rebuilds from zero if the clock jumps backwards.
+  BitMotionInstance.prototype._segment = function (time) {
+    var base = Math.max(this.o.crossfade + 0.5, this.o.sceneSeconds);
+    var seg = this._seg;
+    if (!seg || seg.base !== base || seg.start > time) {
+      seg = this._seg = { base: base, n: 0, start: 0, span: this._spanFor(0, base) };
+    }
+    while (time >= seg.start + seg.span) {
+      seg.start += seg.span;
+      seg.n++;
+      seg.span = this._spanFor(seg.n, base);
+    }
+    return seg;
+  };
+
   BitMotionInstance.prototype._pickScene = function () {
     this._fieldCache = {};
+    this._seg = null;
     this.current = this._buildField(0);
     this._calibrate();
     return this;
@@ -664,6 +777,7 @@
     var minSide = Math.min(gw, gh);
     var sx = minSide / gw, sy = minSide / gh;
     var rnd = makeRandom(this.rndSeed ^ 0x5bf03635);
+    var det = detuner(this.o, rnd);
 
     // Amplitudes are a fraction of the fade band, and the spatial frequency
     // stays under one cycle across the frame, so the edge undulates instead
@@ -676,11 +790,11 @@
         a: band * (0.18 + rnd() * 0.22) * axisScale,
         k: (0.55 + rnd() * 0.75) * TAU,
         p: rnd() * TAU,
-        m: (1 + (rnd() * 2 | 0)) * (rnd() < 0.5 ? -1 : 1),
+        m: det((1 + (rnd() * 2 | 0)) * (rnd() < 0.5 ? -1 : 1)),
         a2: band * (0.06 + rnd() * 0.10) * axisScale,
         k2: (1.3 + rnd() * 1.2) * TAU,
         p2: rnd() * TAU,
-        m2: (1 + (rnd() * 3 | 0)) * (rnd() < 0.5 ? -1 : 1)
+        m2: det((1 + (rnd() * 3 | 0)) * (rnd() < 0.5 ? -1 : 1))
       };
     }
 
@@ -702,9 +816,9 @@
       // Per-side breathing. Opposite sides run in antiphase, so the window
       // squeezes on one side as it releases on the other — it slides and
       // squashes rather than just pulsing symmetrically.
-      kx: (1 + (rnd() * 2 | 0)), px: rnd() * TAU,
-      ky: (1 + (rnd() * 2 | 0)), py: rnd() * TAU,
-      kr: (1 + (rnd() * 2 | 0)), pr: rnd() * TAU
+      kx: det(1 + (rnd() * 2 | 0)), px: rnd() * TAU,
+      ky: det(1 + (rnd() * 2 | 0)), py: rnd() * TAU,
+      kr: det(1 + (rnd() * 2 | 0)), pr: rnd() * TAU
     };
 
     // Squash-and-stretch of the composition itself. Breathing the mask alone
@@ -715,11 +829,35 @@
     // constant instead of pulsing bigger and smaller. Whole cycles per loop,
     // so it closes.
     this._sq = {
-      k: (1 + (rnd() * 2 | 0)) * (rnd() < 0.5 ? -1 : 1),
+      k: det((1 + (rnd() * 2 | 0)) * (rnd() < 0.5 ? -1 : 1)),
       p: rnd() * TAU,
-      k2: (1 + (rnd() * 3 | 0)) * (rnd() < 0.5 ? -1 : 1),
+      k2: det((1 + (rnd() * 3 | 0)) * (rnd() < 0.5 ? -1 : 1)),
       p2: rnd() * TAU
     };
+
+    // How `revolve` is paced — see `_revolveAngle`, which applies these.
+    //
+    // The two modes want opposite things here, so they get different numbers.
+    //
+    // "loop" has to close, which forces whole cycles per loop. A wobble at one
+    // cycle per loop can only ever displace the composition a little before it
+    // has to come back, so the amplitude stays small and the turn just
+    // breathes: TAU * (a1 * w1 + a2 * w2) = 0.81 of a turn per loop of rate
+    // deviation, which never quite cancels the 1-turn base. It slows down and
+    // speeds up but never doubles back.
+    //
+    // "flow" never closes, so the wobble can run SLOWER than the loop — a
+    // period of three to six loops — and that is what buys a visible one. Big
+    // amplitude at low frequency is a large, slow swing: the composition
+    // turns, stalls for several seconds, drifts back a little, then carries
+    // on. Same rate deviation per term (TAU * a * w), but spent on
+    // displacement rather than on oscillation, so it reads as a change of
+    // mind rather than a vibration.
+    this._rev = this.o.mode === "loop"
+      ? { w1: 1, a1: 0.055 + rnd() * 0.030, p1: rnd() * TAU,
+          w2: 2, a2: 0.010 + rnd() * 0.012, p2: rnd() * TAU }
+      : { w1: 0.15 + rnd() * 0.20, a1: 0.25 + rnd() * 0.25, p1: rnd() * TAU,
+          w2: 0.50 + rnd() * 0.40, a2: 0.05 + rnd() * 0.06, p2: rnd() * TAU };
     return this;
   };
 
@@ -802,9 +940,10 @@
       this._prepMask(phase);
       this.sceneName = this.current.name;
     } else {
-      var span = Math.max(o.crossfade + 0.5, o.sceneSeconds);
-      var n = Math.floor(time / span);
-      var local = time - n * span;
+      var seg = this._segment(time);
+      var span = seg.span;
+      var n = seg.n;
+      var local = time - seg.start;
       var a = this._field(n);
       // Phase keeps advancing globally so nothing snaps at a boundary.
       var ph = time / o.loopSeconds;
@@ -997,6 +1136,27 @@
   };
 
   // Writes the field into `work`, optionally blending two compositions.
+  // The angle `revolve` has turned the composition to by `phase`.
+  //
+  // A whole turn per loop at a constant rate is the most predictable thing on
+  // screen: three seconds of it and you can call the next thirty. The two
+  // wobble terms are added to the ANGLE, which modulates the RATE — the
+  // composition surges, stalls and (in "flow") drifts back a little instead of
+  // sweeping round like a second hand. See `_rev` for why the two modes carry
+  // very different amplitudes.
+  //
+  // Kept out of `_fill` so its per-cell loop stays exactly the shape the JIT
+  // already compiles well — folding these few lines into that function cost
+  // five times the fill.
+  BitMotionInstance.prototype._revolveAngle = function (phase, turns) {
+    var ang = TAU * turns * phase;
+    var rv = this._rev;
+    // Vary a turn, never invent one: with `revolve: 0` the composition holds.
+    if (!turns || !rv) return ang;
+    return ang + (Math.sin(TAU * rv.w1 * phase + rv.p1) * rv.a1 +
+                  Math.sin(TAU * rv.w2 * phase + rv.p2) * rv.a2) * TAU * turns;
+  };
+
   // prep() runs once per frame; only at() is in the per-cell path.
   //
   // `revolve` turns the sampling grid about the frame centre, which revolves
@@ -1018,7 +1178,11 @@
     var atB = null;
     if (sceneB) { sceneB.prep(phase); atB = sceneB.at; }
 
-    var turns = Math.round(this.o.revolve || 0);
+    // Whole turns only in "loop" mode — half a turn would leave the
+    // composition upside down at the seam. "flow" mode never closes, so a
+    // fractional `revolve` is free there.
+    var turns = this.o.revolve || 0;
+    if (this.o.mode === "loop") turns = Math.round(turns);
     var inset = Math.max(0, Math.min(0.45, this.o.inset || 0));
 
     // Reserving a margin in the mask alone would just clip the composition at
@@ -1043,8 +1207,9 @@
       }
     }
 
+    var ang = this._revolveAngle(phase, turns);
+
     if (turns || inset > 0 || e !== 0) {
-      var ang = TAU * turns * phase;
       var c = Math.cos(ang) * invShrink, s = Math.sin(ang) * invShrink;
 
       // Rotate, then scale the two screen axes by reciprocal factors. Folding

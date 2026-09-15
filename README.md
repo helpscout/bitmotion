@@ -232,10 +232,10 @@ not a flag. Not implemented here.
 | --- | --- | --- |
 | `blobs` | `5` | 0–12. How many orbiting blobs `drift` composes with. Raising it makes the field busier and more likely to separate into islands; `0` leaves a bare gradient. Changing it rebuilds the composition. Costs about 0.2ms per blob at 278k cells. |
 | `morph` | `0.6` | 0–1, how much the overall silhouette breathes and squashes across the loop. Drives both the outline (travelling edge warp, per-side breathing) and an antiphase squash-and-stretch of the composition itself. `0` freezes the shape. |
-| `revolve` | `1` | Whole turns of the whole composition per loop. `0` holds the orientation fixed. Must be an integer — half a turn would leave the composition upside down at the loop seam, so the value is rounded. |
+| `revolve` | `1` | Turns of the whole composition per loop, on **average**. The turn is not a constant sweep: in `flow` it surges, stalls for seconds at a time and occasionally drifts backwards before carrying on (about 2% of the time), wandering up to ±120° either side of where a constant spin would have put it. In `loop` the seam constrains it to a much gentler breathe. `0` holds the orientation fixed. `loop` rounds the value to a whole number, since half a turn would leave the composition upside down at the seam; `flow` never closes, so fractional values work there. |
 | `mode` | `"flow"` | `flow` never repeats; `loop` is an exact cycle. |
-| `loopSeconds` | `14` | One full cycle in `loop` mode. |
-| `sceneSeconds` | `11` | Seconds per composition in `flow` mode. |
+| `loopSeconds` | `14` | One full cycle in `loop` mode. In `flow` mode it is the base tempo everything is detuned around. |
+| `sceneSeconds` | `11` | Average seconds per composition in `flow` mode. Actual lengths are drawn per composition from 0.7x to 1.5x of it, so the cut is not a metronome. |
 | `crossfade` | `3.5` | Seconds of blend between compositions. |
 | `fps` | `20` | Render cap. The look holds up well below 30, which is where the playground's slider now stops — nothing above that buys anything here. |
 | `seed` | `null` | Integer for a reproducible composition. Also drives the silhouette. |
@@ -319,6 +319,48 @@ can carve a hole as readily as raise a peak), softness is weighted toward
 tight, and each blob draws its own orbit direction rather than alternating by
 index. Flattening any of that back out returns the stripes.
 
+**In `flow` mode, nothing runs at a whole number of cycles per loop.** This is
+the single biggest thing keeping a long look from reading as a short tape. Loop
+mode needs the seam to close, so every rate in it — blob orbits, gradient
+sweep, wave speeds, edge warp, squash, revolve — has to be a whole number of
+cycles per `loopSeconds`. The consequence is that all of them share a common
+period, and that period is the loop: the entire animation repeats exactly every
+14 seconds, whether or not you asked it to. Flow mode never has to close, so
+`detuner()` does two things to each rate. It nudges it off its whole number by
+up to ±17% — detuned rates share no common period, so the parts drift in and
+out of phase and the composition keeps arriving where it has not been — and it
+scales every rate in a composition by one **tempo**, drawn per composition from
+0.55x to 1.6x. The tempo is what stops the piece having a single gear: without
+it the shapes changed every ten seconds but the *speed* never did, so each
+composition was the same event in a new costume. Measured: a `drift` field one
+full loop later used to be bit-identical; it now differs by about 29% of the
+field's own amplitude, and the fastest composition in a run now moves 3.3x
+faster than the slowest (it was 1.9x). Rounding those rates back to integers
+restores the repeat.
+
+**Blob orbits are epicycles, not circles.** One circle traced at a constant
+rate is the most predictable path there is — watch a blob round the top and you
+know the rest of the pass. Each blob now carries a faster counter-turning
+epicycle and a slow breathing of the orbit's own size, so it loops, stalls and
+swings wide instead of retracing the same ellipse. The orbit radius is scaled
+back by the combined peak of both, or the blobs would simply swing further
+off-frame and spend more of the loop invisible.
+
+**`revolve` modulates its rate, and the two modes need different numbers.** The
+wobble terms are added to the *angle*, which modulates the rate. `loop` has to
+close, which forces whole cycles per loop; a wobble at one cycle per loop can
+only displace the composition a little before it has to come back, so it just
+breathes. `flow` never closes, so its wobble runs *slower* than the loop — a
+period of three to six loops — and that low frequency is what buys a visible
+swing: big amplitude spent on displacement instead of oscillation. The first
+attempt used flow amplitudes at loop frequencies and moved the composition
+±18°, which is invisible; at ±120° it reads as the thing changing its mind.
+
+**`_revolveAngle` is a separate method for a reason.** Folding those few lines
+into `_fill` instead of calling out to a method made the fill **five times
+slower** (0.35ms → 1.95ms at 800×333) — the per-cell loop stops getting
+compiled the way it was. Keep them out of that function.
+
 **`revolve` rotates the sampling grid, not the mask.** A scene's gradient axis
 is fixed for the life of a composition — only its offset slides — so without
 this the colours belong permanently to the same corners. Rotating the sample
@@ -365,7 +407,29 @@ Current as of the last change:
   fused quantise pass (4614 / 7522 / 6014 / 6373 / 5174), so output is
   bit-for-bit unchanged.
 - **`revolve` does not break the loop.** 0 cells differ at the seam for every
-  scene at 0, 1, 2 and 3 turns per loop.
+  scene at 0, 1, 2 and 3 turns per loop — including with the rate wobble, and
+  also at `shape` `radial`/`none`, `morph` 0 and `blobs` 0.
+- **Flow mode no longer repeats at the loop period.** A `drift` field sampled
+  one full loop apart used to be bit-identical (mean absolute difference 0);
+  it now differs by 0.23 per cell, against a field amplitude of order 1.
+  Frame-to-frame cell agreement between t and t+`loopSeconds`, averaged over
+  three minutes, fell from 0.84 to 0.80 (the floor is the shared paper
+  background, which matches either way).
+- **The revolve genuinely wanders.** Differentiating `_revolveAngle` over 400
+  seeds and eight loops each, turns-per-loop ranges -0.59 to 2.58 and is
+  negative about 1.6% of the time — long stalls and brief drifts backwards,
+  not a jitter. Against a constant spin it leads or lags by up to ±120°.
+  `revolve: 0` returns an angle of exactly 0 at every phase.
+- **Composition lengths vary but stay bounded.** Spans run 0.7x–1.5x of
+  `sceneSeconds`, floored at `crossfade + 0.5` so a composition is never over
+  before it has finished fading in. 48 compositions over 10 minutes.
+- **The motion changes are free.** Frame cost at 800×333 is 9.28ms against
+  9.09ms before, and `_fill` for `drift` is 2.28ms in both — the extra trig is
+  all in `prep`, which runs once a frame, not per cell.
+  Benchmarking caveat: compare two builds loaded the *same way*. Timing a
+  `<script src>` copy on the demo page against a freshly compiled one reads
+  50% slow, because the page's own render loop is competing for the frame.
+  That confound produced a phantom regression twice while working on this.
 - **Blob count does not break the loop.** 0 cells differ at the seam for
   `drift` and `nebula` at 0, 3, 5 and 12 blobs — the orbit speeds are whole
   turns per cycle.
