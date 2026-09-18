@@ -84,6 +84,11 @@ config** — it emits a paste-ready `BitMotion.create({...})` with only the
 options that differ from defaults, including the seed. That is the intended
 designer-to-developer handoff; nobody should be hand-tuning numbers.
 
+The **Background** swatches set the colour the artwork sits on, and the
+playground restyles the stage to match so the preview is honest. When the
+emitted config carries a `background`, the container it goes into needs that
+same colour — see [Backgrounds](#backgrounds).
+
 The export panel deliberately has no settings of its own beyond output size
 and file format: block size, cycle length and frame rate all come from the
 console, so the file matches what was on screen. One consequence worth
@@ -223,8 +228,36 @@ not a flag. Not implemented here.
 | `dither` | `"atkinson"` | `atkinson` (Bitmaker's), `bayer` (ordered, temporally calmer), `none` (flat blocks). |
 | `exposure` | `0` | −1…1. Negative shows more paper. |
 | `contrast` | `1` | >1 widens flat areas, <1 widens the stipple. |
-| `background` | `#FAF8F7` | Palette entries matching this render at alpha 0. |
+| `background` | `#FAF8F7` | The colour the artwork dissolves into. Palette entries matching it render at alpha 0, and it is removed from the rest of the ramp — see below. `BitMotion.BACKGROUNDS` holds the five supported values. |
 | `transparent` | `true` | `false` paints the background colour instead. |
+
+### Backgrounds
+
+`BitMotion.BACKGROUNDS` is the set of colours the artwork is designed to sit
+on:
+
+| Key | Hex | |
+| --- | --- | --- |
+| `clay` | `#FAF8F7` | default |
+| `blue` | `#0064F0` | |
+| `red` | `#FF856D` | |
+| `lilac` | `#431379` | |
+| `yellow` | `#FFDD99` | |
+
+```js
+BitMotion.create({ canvas: "#hero", background: BitMotion.BACKGROUNDS.blue });
+```
+
+Every one of them is also a ramp colour, so choosing one rewrites the ramp:
+the chosen colour takes over the ramp's low stop — the one the artwork
+dissolves into — and is dropped from wherever else it sat, with the surviving
+stops respaced evenly over the ramp's authored range. `dissolve` on blue is
+therefore blue → yellow → coral → purple, with no blue in the artwork itself.
+
+With `transparent: true` (the default) those background cells are punched out
+rather than painted, so **the container has to carry the same colour** —
+otherwise the artwork dissolves into whatever is actually behind the canvas.
+Set `transparent: false` and the engine paints it for you.
 
 ### Motion
 
@@ -255,6 +288,18 @@ read as a faint dirty rectangle behind the artwork, which is exactly the seam
 the transparent background exists to avoid. Paper straight into yellow gives a
 clean stipple fade. This is the one intentional palette deviation from
 Bitmaker.
+
+**The background colour is removed from the ramp, not just added to it.** A
+cell in the background colour is a transparent cell — that is the whole
+mechanism behind the dissolve. Leaving the background in the middle of the
+ramp as well means the quantiser punches transparent holes through the centre
+of the composition wherever the field passes through that value, which reads
+as damage rather than as texture. So the colour appears exactly once, at the
+low stop, and the survivors are respaced to close the gap: dropping a stop
+without respacing leaves a wide flat stretch of one colour where two used to
+blend. With the default clay background nothing is dropped and the respacing
+reproduces the authored stops exactly, so that path is byte-for-byte
+unchanged.
 
 **The edge falloff fades in colour space, not by value.** Scaling the field
 value toward zero walks each edge cell *down the ramp* through yellow and

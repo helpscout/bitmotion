@@ -38,7 +38,7 @@
     yellow: "#FFDD99",
     coral: "#FF856D",
     blue: "#0064F0",
-    purple: "#4B158C",
+    purple: "#431379",
     ink: "#131B24"
   };
 
@@ -54,6 +54,13 @@
     if (!m) return { r: 0, g: 0, b: 0 };
     var n = parseInt(m[1], 16);
     return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+  }
+
+  // Colours are compared by string all over `setRamp`, so they have to agree
+  // on case and on the leading hash first.
+  function normHex(hex) {
+    var m = /^#?([0-9a-f]{6})$/i.exec(String(hex).trim());
+    return m ? "#" + m[1].toLowerCase() : "#000000";
   }
 
   // Builds a 256-entry lookup table from gradient stops, so the per-cell hot
@@ -101,6 +108,63 @@
     duo: [[0.0, HS.paper], [0.45, HS.coral], [1.0, HS.purple]],
     ink: [[0.0, HS.paper], [0.55, HS.blue], [1.0, HS.ink]]
   };
+
+  // The backgrounds the artwork is designed to sit on. Every one of them is
+  // also a ramp colour, which is the whole reason `resolveStops` exists.
+  var BACKGROUNDS = {
+    clay: HS.paper,
+    blue: HS.blue,
+    red: HS.coral,
+    lilac: HS.purple,
+    yellow: HS.yellow
+  };
+
+  // Ramps are authored with HS.paper sitting in the *background slot* — the
+  // stop the artwork dissolves into, and the one that renders at alpha 0.
+  // Choosing a different background rewrites that slot to the new colour and
+  // deletes the new colour from wherever else it sat in the ramp: a cell
+  // painted in the background colour is a transparent cell, so leaving one
+  // mid-ramp punches holes through the middle of the composition rather than
+  // only at its edges.
+  //
+  // The survivors are then respaced evenly across what is left of the range,
+  // so dropping a stop closes the gap instead of leaving a wide flat stretch
+  // of one colour where two used to blend. With the default clay background
+  // nothing is dropped and the even respacing reproduces the authored stops
+  // exactly, so that path is unchanged.
+  function resolveStops(spec, background) {
+    var bgKey = normHex(background);
+    var slotKey = normHex(HS.paper);
+    var slotAt = null, keep = [], lo = null, hi = null;
+
+    for (var i = 0; i < spec.length; i++) {
+      var at = spec[i][0], key = normHex(spec[i][1]);
+      if (key === slotKey && slotAt === null) { slotAt = at; continue; }
+      // The span the survivors are spread over is the one the ramp was
+      // authored with, not the one the survivors happen to span. Taking it
+      // from the survivors would leave a flat stretch of the last colour
+      // whenever the dropped stop was the top of the ramp.
+      if (lo === null) lo = at;
+      hi = at;
+      if (key === bgKey) continue;   // collides with the background: drop it
+      keep.push(key);
+    }
+
+    // Nothing left but the background — a two-stop ramp of one colour is not
+    // a ramp, so hand back the flat background and let it render as empty.
+    if (!keep.length) return [[slotAt === null ? 0 : slotAt, bgKey]];
+    if (hi <= lo) hi = lo + 1e-6;
+
+    var out = [];
+    // A ramp with no background slot (`bleed`) stays full-bleed: nothing is
+    // added at the low end, so no cell is ever transparent.
+    if (slotAt !== null) out.push([slotAt, bgKey]);
+    for (var j = 0; j < keep.length; j++) {
+      var t = keep.length === 1 ? 1 : j / (keep.length - 1);
+      out.push([lo + (hi - lo) * t, keep[j]]);
+    }
+    return out;
+  }
 
   /* --------------------------------------------------------------- scenes */
 
@@ -498,9 +562,14 @@
   }
 
   BitMotionInstance.prototype.setRamp = function (ramp) {
-    var spec = typeof ramp === "string" ? RAMPS[ramp] : ramp;
-    if (!spec) spec = RAMPS.dissolve;
+    var authored = typeof ramp === "string" ? RAMPS[ramp] : ramp;
+    if (!authored) authored = RAMPS.dissolve;
     this.o.ramp = ramp;
+
+    // Resolved against the current background: the background takes over the
+    // ramp's low stop and is removed from everywhere else. See resolveStops.
+    var spec = resolveStops(authored, this.o.background);
+    this.stops = spec;
     this.rampLut = buildRamp(normalizeStops(spec));
 
     // The dither palette is the set of distinct colours in the ramp.
@@ -526,7 +595,14 @@
   };
 
   BitMotionInstance.prototype.setOption = function (key, value) {
-    if (key === "ramp") return this.setRamp(value);
+    // The background is baked into the resolved ramp and the palette, so
+    // changing it rebuilds both, exactly as changing the ramp does.
+    if (key === "ramp" || key === "background") {
+      if (key === "background") this.o.background = value;
+      this.setRamp(key === "ramp" ? value : this.o.ramp);
+      if (!this.running) this._render(this.elapsed);
+      return this;
+    }
     this.o[key] = value;
     if (key === "resolution" || key === "cellSize" || key === "maxDpr" ||
         key === "maxCells") this._resize();
@@ -1320,6 +1396,7 @@
   return {
     create: function (opts) { return new BitMotionInstance(opts); },
     RAMPS: RAMPS,
+    BACKGROUNDS: BACKGROUNDS,
     SCENES: SCENE_NAMES,
     COLORS: HS,
     hexToRgb: hexToRgb

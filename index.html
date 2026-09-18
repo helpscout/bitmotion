@@ -11,7 +11,7 @@
     --yellow: #FFDD99;
     --coral:  #FF856D;
     --blue:   #0064F0;
-    --purple: #4B158C;
+    --purple: #431379;
     --ink:    #131B24;
 
     --fg-soft:  #5C6169;
@@ -136,6 +136,19 @@
   button:disabled { opacity: 0.45; cursor: default; }
   .row { display: flex; gap: 8px; }
   .row button { flex: 1; }
+  /* Colour is the control here, so the swatches are the whole button — no
+     label text competing with the thing being chosen. */
+  .swatches { display: flex; gap: 6px; }
+  .swatches button {
+    flex: 1;
+    width: auto;
+    padding: 0;
+    border-radius: 3px;
+  }
+  .swatches button[aria-pressed="true"] {
+    border-color: var(--ink);
+    box-shadow: inset 0 0 0 2px #fff;
+  }
   .check { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; color: var(--fg-soft); }
 
   #go {
@@ -183,7 +196,7 @@
   <span class="readout" id="readout"></span>
 </div>
 
-<div class="stage">
+<div class="stage" id="stage">
   <canvas id="art"></canvas>
 </div>
 
@@ -209,6 +222,10 @@
     <div class="field">
       <label for="ramp">Ramp</label>
       <select id="ramp"></select>
+    </div>
+    <div class="field">
+      <label>Background <span class="val" id="bgV">Clay</span></label>
+      <div class="swatches" id="bg"></div>
     </div>
     <!-- HIDDEN: Quantiser. Locked to Atkinson diffusion (the engine default,
          and the one that matches Bitmaker). Uncomment to expose Bayer and
@@ -380,6 +397,42 @@
   });
   rampSel.value = "dissolve";
 
+  // Background. Whichever colour is picked drops out of the ramp inside the
+  // engine — a cell in the background colour is a transparent cell, so
+  // leaving it in the ramp would punch holes through the artwork instead of
+  // only dissolving its edges. The stage follows the choice so the canvas
+  // sits on the colour it is dissolving into; on a live page that is the
+  // container's own background.
+  var bgBox = document.getElementById("bg");
+  var bgOut = document.getElementById("bgV");
+  var stage = document.getElementById("stage");
+  var BG_LABELS = { clay: "Clay", blue: "Blue", red: "Red", lilac: "Lilac", yellow: "Yellow" };
+
+  Object.keys(BitMotion.BACKGROUNDS).forEach(function (n) {
+    var hex = BitMotion.BACKGROUNDS[n];
+    var b = document.createElement("button");
+    b.type = "button";
+    b.style.background = hex;
+    b.dataset.bg = n;
+    b.title = BG_LABELS[n] + " " + hex;
+    b.setAttribute("aria-label", "Background " + BG_LABELS[n]);
+    b.setAttribute("aria-pressed", String(hex === bm.o.background));
+    b.addEventListener("click", function () { pickBackground(n); });
+    bgBox.appendChild(b);
+  });
+
+  function pickBackground(n) {
+    var hex = BitMotion.BACKGROUNDS[n];
+    bm.setOption("background", hex);
+    stage.style.background = hex;
+    bgOut.textContent = BG_LABELS[n];
+    Array.prototype.forEach.call(bgBox.children, function (b) {
+      b.setAttribute("aria-pressed", String(b.dataset.bg === n));
+    });
+    refreshSnippet();
+    refreshPlan();
+  }
+
   ["mode", "scene", "ramp", "dither", "shape"].forEach(function (id) {
     var el = document.getElementById(id);
     if (!el) return;
@@ -479,14 +532,15 @@
 
   // Only the options that actually differ from the engine defaults, so the
   // snippet stays readable instead of restating the whole config object.
-  var SNIPPET_KEYS = ["scene", "ramp", "mode", "dither", "shape", "falloff",
-                      "cellSize", "maxCells", "revolve", "inset", "morph",
-                      "blobs", "exposure", "contrast", "loopSeconds", "fps"];
+  var SNIPPET_KEYS = ["scene", "ramp", "background", "mode", "dither", "shape",
+                      "falloff", "cellSize", "maxCells", "revolve", "inset",
+                      "morph", "blobs", "exposure", "contrast", "loopSeconds",
+                      "fps"];
   var DEFAULTS_FOR_SNIPPET = {
-    scene: "drift", ramp: "dissolve", mode: "flow", dither: "atkinson",
-    shape: "edges", falloff: 0.45, cellSize: 3, maxCells: 0,
-    revolve: 1, inset: 0.04, morph: 0.6, blobs: 5, exposure: 0, contrast: 1,
-    loopSeconds: 14, fps: 20
+    scene: "drift", ramp: "dissolve", background: "#FAF8F7", mode: "flow",
+    dither: "atkinson", shape: "edges", falloff: 0.45, cellSize: 3,
+    maxCells: 0, revolve: 1, inset: 0.04, morph: 0.6, blobs: 5, exposure: 0,
+    contrast: 1, loopSeconds: 14, fps: 20
   };
   var snippetBox = document.getElementById("snippet");
 
@@ -625,7 +679,8 @@
       note = "≈" + est.toFixed(0) + " MB, a few seconds to encode.";
       if (est > 40) note += " Shorten the loop or drop the size for web use.";
     } else if (isVideo) {
-      note = "Records in real time — about " + o.seconds + "s. Opaque paper background. " +
+      note = "Records in real time — about " + o.seconds + "s. Opaque " +
+        bgOut.textContent.toLowerCase() + " background. " +
         (fmt === "video-mp4"
           ? "H.264 visibly softens these edges; use WebM or PNG if that matters."
           : "Cleanest video option, though still not lossless.");
