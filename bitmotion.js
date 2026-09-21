@@ -449,6 +449,28 @@
   function smoothstep(t) { return t * t * (3 - 2 * t); }
   function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
 
+  // Where in the frame the composition is anchored: nine named points on a
+  // 3x3 grid, in normalised frame coordinates. Anchoring off-centre moves the
+  // field AND its falloff together, so the composition keeps its shape and
+  // simply hangs off the side it is pinned to — a corner anchor shows a
+  // quarter of it. Nothing is laid out, only sampled, so the part that leaves
+  // the frame costs nothing and can never make the page scroll.
+  var ORIGINS = {
+    "top-left":    [0,   0  ], "top":    [0.5, 0  ], "top-right":    [1, 0  ],
+    "left":        [0,   0.5], "center": [0.5, 0.5], "right":        [1, 0.5],
+    "bottom-left": [0,   1  ], "bottom": [0.5, 1  ], "bottom-right": [1, 1  ]
+  };
+
+  // Accepts a name or an {x, y} pair, so anything between the nine points is
+  // still expressible from a config.
+  function originXY(v) {
+    if (v && typeof v === "object") {
+      return { x: clamp01(v.x == null ? 0.5 : v.x), y: clamp01(v.y == null ? 0.5 : v.y) };
+    }
+    var p = ORIGINS[v] || ORIGINS.center;
+    return { x: p[0], y: p[1] };
+  }
+
   /* --------------------------------------------------------------- engine */
 
   var DEFAULTS = {
@@ -484,7 +506,16 @@
     exposure: 0,           // -1..1 after normalising; negative shows more paper
     contrast: 1,           // >1 widens the flat areas, <1 widens the stipple
     shape: "edges",        // falloff mask: "edges" | "radial" | "none"
-    falloff: 0.45,         // 0..1 — how far the mask reaches in from the frame
+    origin: "center",      // anchor point for the composition and its mask:
+                           // one of the nine ORIGINS names, or {x, y} in
+                           // 0..1. Off-centre anchors deliberately hang part
+                           // of the composition outside the frame.
+    falloff: 0.7,          // 0..1 — how far the edge blurs OUTWARD. The
+                           // silhouette has a fixed core; the fade grows out
+                           // from it into the paper beyond, reaching the
+                           // frame (less `inset`) at 1. Softening therefore
+                           // widens the shape instead of shrinking it, and 0
+                           // is the same shape with a hard edge.
     morph: 0.6,            // 0..1 — how much the outline breathes and squishes
                            // over the loop. 0 freezes the silhouette.
     inset: 0.04,           // guaranteed paper margin, as a fraction of the
@@ -608,7 +639,10 @@
         key === "maxCells") this._resize();
     if (key === "morph") this._maskParams();
     if (key === "shape") this._resize(); // radial needs its per-cell tables
-    if (key === "shape" || key === "falloff" || key === "inset") {
+    // The anchor is baked into the radial tables, and it moves the field the
+    // auto-levels were measured against, so both have to be redone.
+    if (key === "origin") this._buildRadial();
+    if (key === "shape" || key === "falloff" || key === "inset" || key === "origin") {
       this._maskParams();
       this._lo = null;
       this._calibrate();
@@ -616,7 +650,21 @@
     if (key === "scene" || key === "scenes" || key === "blobs") this._pickScene(this.elapsed);
     if (key === "mode" || key === "levels" || key === "revolve") {
       this._lo = null;
-      this._calibrate();
+      // `mode` is not a switch the renderer reads each frame — it is baked
+      // into every RATE in the piece. `detuner` leaves them at whole cycles
+      // per loop in "loop" and detunes them off each other in "flow", and
+      // whole cycles are the entire reason the seam closes. Both the
+      // composition and the mask capture it when they are built, so
+      // switching mode without rebuilding them leaves every part of the
+      // piece ending the cycle somewhere other than where it began: the
+      // loop then cuts at the wrap instead of closing. Rebuild both.
+      // `_pickScene` calibrates on its way out, so nothing else to do.
+      if (key === "mode") {
+        this._maskParams();
+        this._pickScene(this.elapsed);
+      } else {
+        this._calibrate();
+      }
     }
     if (!this.running) this._render(this.elapsed);
     return this;
@@ -691,6 +739,40 @@
   // the tone at t=loopSeconds and the loop would visibly jump at the seam.
   // Instead, sample the whole cycle once up front and fix the range, which
   // makes the render an exact function of phase — and therefore periodic.
+  // The block of cells where the field is inside its own 0..1 domain: the
+  // window `inset` leaves, moved to the anchor. Auto-levels measure only
+  // here. Outside it the scene is being extrapolated — for `drift` that is
+  // its gradient still climbing with nothing left to bend it — and those
+  // runaway values would set the range for the whole frame, squeezing
+  // everything actually on show into a fraction of the ramp. A strong
+  // margin flattened the artwork for exactly this reason. Nothing is lost
+  // by skipping that region: it is under the mask's paper.
+  //
+  // `revolve` turns the domain, so the corners of this block can sample a
+  // little past it. A little is fine — it is a range, not a boundary.
+  BitMotionInstance.prototype._levelRect = function () {
+    var gw = this.gw, gh = this.gh;
+    var inset = Math.max(0, Math.min(0.45, this.o.inset || 0));
+    // Full bleed has no mask, so there is no paper hiding the extrapolated
+    // region — it is all on show and all of it has to be in range.
+    if (this.o.shape === "none" || inset <= 0) {
+      return { x0: 0, y0: 0, x1: gw - 1, y1: gh - 1 };
+    }
+    var half = (1 - inset) * 0.5;
+    var org = this._origin();
+    var x0 = Math.floor((org.x - half) * (gw - 1));
+    var x1 = Math.ceil((org.x + half) * (gw - 1));
+    var y0 = Math.floor((org.y - half) * (gh - 1));
+    var y1 = Math.ceil((org.y + half) * (gh - 1));
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > gw - 1) x1 = gw - 1;
+    if (y1 > gh - 1) y1 = gh - 1;
+    if (x1 < x0) x1 = x0;
+    if (y1 < y0) y1 = y0;
+    return { x0: x0, y0: y0, x1: x1, y1: y1 };
+  };
+
   BitMotionInstance.prototype._calibrate = function () {
     this._fixedLo = null;
     if (this.o.mode !== "loop" || !this.o.levels || !this.current) return this;
@@ -701,13 +783,17 @@
     var work = this.work;
     var lo = Infinity, hi = -Infinity;
     var STEPS = 24;
+    var r = this._levelRect(), gw = this.gw;
 
     for (var s = 0; s < STEPS; s++) {
       this._fill(work, this.current.scene, s / STEPS, 1, null, 0);
-      for (var i = 0; i < work.length; i++) {
-        var v = work[i];
-        if (v < lo) lo = v;
-        if (v > hi) hi = v;
+      for (var y = r.y0; y <= r.y1; y++) {
+        var base = y * gw;
+        for (var x = r.x0; x <= r.x1; x++) {
+          var v = work[base + x];
+          if (v < lo) lo = v;
+          if (v > hi) hi = v;
+        }
       }
     }
     if (hi - lo < 1e-4) hi = lo + 1e-4;
@@ -807,33 +893,94 @@
     for (var yi = 0; yi < gh; yi++) this._nys[yi] = yi * invH;
     this._colDist = new Float32Array(gw);
     this._rowDist = new Float32Array(gh);
-    this._warpRow = new Float32Array(gh);
-    this._warpCol = new Float32Array(gw);
-    this._radWarp = new Float32Array(256);
+    // The fade's two ends, per row for the x-fade and per column for the
+    // y-fade, already divided through by their own band — see _prepMask.
+    this._xInv = new Float32Array(gh);
+    this._xOut = new Float32Array(gh);
+    this._yInv = new Float32Array(gw);
+    this._yOut = new Float32Array(gw);
+    this._rOut = new Float32Array(256);
+    this._rInv = new Float32Array(256);
 
-    // Radial needs per-cell radius and angle, so it pays for two arrays the
-    // edges mask does not. Allocated only when that shape is in use.
-    if (this.o.shape === "radial") {
-      this._rad = new Float32Array(gw * gh);
-      this._thetaIdx = new Uint8Array(gw * gh);
-      for (var ry = 0; ry < gh; ry++) {
-        for (var rx = 0; rx < gw; rx++) {
-          var ax = (this._nxs[rx] - 0.5) * 2, ay = (this._nys[ry] - 0.5) * 2;
-          var p2 = ry * gw + rx;
-          this._rad[p2] = Math.sqrt(ax * ax + ay * ay) / Math.SQRT2;
-          this._thetaIdx[p2] = ((Math.atan2(ay, ax) / TAU + 0.5) * 256) & 255;
-        }
-      }
-    } else {
-      this._rad = null;
-      this._thetaIdx = null;
-    }
+    this._buildRadial();
     // Palette index per cell, kept alongside the RGBA so exporters can encode
     // indexed formats (GIF) straight from the grid without re-quantising.
     this.indices = new Uint8Array(gw * gh);
     this._lo = null; // re-measure levels against the new grid
     this._maskParams();
     this._calibrate();
+    return this;
+  };
+
+  // The resolved anchor, memoised on the option itself: `_fill` and
+  // `_prepMask` both want it every frame, and neither should be handing the
+  // collector a fresh object 40 times a second. Setting `o.origin` to a new
+  // value — which is what `setOption` does — invalidates it; mutating an
+  // {x, y} object in place does not, so don't.
+  BitMotionInstance.prototype._origin = function () {
+    if (this._orgKey !== this.o.origin || !this._org) {
+      this._orgKey = this.o.origin;
+      this._org = originXY(this.o.origin);
+    }
+    return this._org;
+  };
+
+  // Per-cell radius and angle for the radial mask — the only two tables that
+  // depend on WHERE the composition is anchored, so this is also what an
+  // `origin` change rebuilds. Radial pays for them; `edges` does not, so they
+  // are allocated only while that shape is in use.
+  //
+  // A TRUE CIRCLE, and a big one. Two decisions:
+  //
+  // Distance is measured in CELLS, which are square, so it is a distance in
+  // pixels. Measuring per axis in normalised coordinates — where 1 is the
+  // half-width horizontally and the half-height vertically — is what made
+  // the shape an oval stretched to the frame. It also put the fade's whole
+  // band outside the canvas along the long axis back when the radius was
+  // normalised by the half-diagonal, which is the hard line this started
+  // with; that part is fixed either way, but pixels are what make it round.
+  //
+  // The unit is the distance to the FARTHEST frame edge, so `falloff` 1 is a
+  // circle that reaches the far side. On a frame that is not square a circle
+  // that big cannot also stay inside the near sides, and it is not supposed
+  // to: it runs off them, which is how a circle fills a rectangle and what
+  // the artwork wants on a banner. Wind `falloff` down and the circle shrinks
+  // inside the frame; there is a point on the way — where the radius equals
+  // the short half-extent — below which nothing crosses an edge at all.
+  // `inset` still holds its margin on the long axis, where the fade ends.
+  BitMotionInstance.prototype._buildRadial = function () {
+    var gw = this.gw, gh = this.gh;
+    if (this.o.shape !== "radial" || !gw || !gh) {
+      this._rad = null;
+      this._thetaIdx = null;
+      return this;
+    }
+    var org = this._origin();
+    var n = gw * gh;
+    var rad = this._rad && this._rad.length === n ? this._rad : new Float32Array(n);
+    var th = this._thetaIdx && this._thetaIdx.length === n ? this._thetaIdx : new Uint8Array(n);
+
+    // The anchor in cells, and the reach to each side from it. An anchored
+    // circle measures its own four distances, so pinning it to an edge grows
+    // it to span the frame from there rather than shrinking it to the corner
+    // it sits in.
+    var cx = org.x * (gw - 1), cy = org.y * (gh - 1);
+    var far = Math.max(cx, gw - 1 - cx, cy, gh - 1 - cy);
+    if (far < 1e-6) far = 1e-6;
+    var invFar = 1 / far;
+
+    for (var ry = 0; ry < gh; ry++) {
+      var ay = ry - cy;
+      var base = ry * gw;
+      for (var rx = 0; rx < gw; rx++) {
+        var ax = rx - cx;
+        var p2 = base + rx;
+        rad[p2] = Math.sqrt(ax * ax + ay * ay) * invFar;
+        th[p2] = ((Math.atan2(ay, ax) / TAU + 0.5) * 256) & 255;
+      }
+    }
+    this._rad = rad;
+    this._thetaIdx = th;
     return this;
   };
 
@@ -849,46 +996,88 @@
     var gw = this.gw, gh = this.gh;
     if (!gw || !gh) return this;
 
-    var band = Math.max(0.001, Math.min(1, this.o.falloff)) * 0.5;
+    var falloff = Math.max(0.001, Math.min(1, this.o.falloff));
+
+    // WHICH WAY THE FADE GROWS. The silhouette has a fixed core — CORE_R of
+    // the way from the anchor to the frame — and the fade grows OUTWARD from
+    // it, into the paper between the core and the frame, reaching the frame
+    // at `falloff` 1. That is the whole point: blurring the edge makes the
+    // shape wider and taller, never smaller.
+    //
+    // Anchoring the fade at the frame instead and letting it eat inward —
+    // which is what this did — can only ever shrink the shape, because the
+    // one end that is pinned is the outer one. Softening then ate the core
+    // from both sides at once and the composition drew itself in. The core
+    // is the pinned end now, and `inset` still owns where the outer limit
+    // is, so a margin asked for is a margin kept.
+    var band = falloff * 0.5;
+    // Wobble amplitude. It follows the band while the band is small — a
+    // crisp edge should undulate in proportion to itself — and saturates
+    // gently after that instead of tracking a long fade all the way up.
+    // A hyperbolic soft-min rather than a hard `Math.min`, so there is no
+    // kink in the middle of the slider where the behaviour changes.
+    var sband = 0.12 * band / Math.sqrt(0.0144 + band * band);
     var minSide = Math.min(gw, gh);
     var sx = minSide / gw, sy = minSide / gh;
     var rnd = makeRandom(this.rndSeed ^ 0x5bf03635);
     var det = detuner(this.o, rnd);
 
-    // Amplitudes are a fraction of the fade band, and the spatial frequency
-    // stays under one cycle across the frame, so the edge undulates instead
+    // Amplitudes are a fraction of the boundary budget, and the spatial
+    // frequency stays under one cycle across the frame, so it undulates instead
     // of scalloping into decoration. Amplitudes scale per axis by that axis'
     // share of the short edge, keeping the wobble the same size in PIXELS on
     // both axes. `m`/`m2` are the TIME frequencies: whole numbers of turns
     // per loop, which is what lets the boundary travel and still close.
     function axis(axisScale) {
       return {
-        a: band * (0.18 + rnd() * 0.22) * axisScale,
+        a: sband * (0.18 + rnd() * 0.22) * axisScale,
         k: (0.55 + rnd() * 0.75) * TAU,
         p: rnd() * TAU,
         m: det((1 + (rnd() * 2 | 0)) * (rnd() < 0.5 ? -1 : 1)),
-        a2: band * (0.06 + rnd() * 0.10) * axisScale,
+        a2: sband * (0.06 + rnd() * 0.10) * axisScale,
         k2: (1.3 + rnd() * 1.2) * TAU,
         p2: rnd() * TAU,
         m2: det((1 + (rnd() * 3 | 0)) * (rnd() < 0.5 ? -1 : 1))
       };
     }
 
+    // Snaps an axis' two spatial frequencies to whole cycles, for the one
+    // warp whose argument runs round a circle rather than across the frame.
+    // Keeping the two terms at different harmonics preserves the detail the
+    // second one is there for.
+    function closed(a) {
+      a.k = TAU * Math.max(1, Math.round(a.k / TAU));
+      a.k2 = TAU * Math.max(2, Math.round(a.k2 / TAU));
+      return a;
+    }
+
+    // The edge mask's distance runs 0 at the frame to 0.5 at the middle,
+    // while the radial's runs 0 at the anchor to 1 at the frame — the same
+    // journey measured at half the scale, which is why the radial core is
+    // twice the number. Both put the core half way, so `falloff` means the
+    // same fraction of the same journey in either shape.
     this._mp = {
-      band: band,
-      invBand: 1 / band,
+      coreD: 0.25,                          // edges: core distance in from the frame
+      // Radial: core radius, as a fraction of the reach to the farthest
+      // edge. Kept well under the short half-extent of any sane frame, so
+      // that winding `falloff` down really does pull the circle inside the
+      // frame rather than bottoming out on a core that never fitted.
+      coreR: 0.35,
+      falloff: falloff,
+      sband: sband,
       sx: sx, sy: sy,
-      // Envelope bound: the warp is bipolar, so at its positive peaks it
-      // pushes the boundary OUTWARD. Measuring the margin from the envelope
-      // rather than the average is what makes `inset` a floor instead of an
-      // average, and it holds while the warp travels because travelling only
-      // shifts phase, never amplitude.
-      warpMaxX: band * 0.56 * sx,
-      warpMaxY: band * 0.56 * sy,
-      warpMaxR: band * 0.56,
       x: axis(sx),
       y: axis(sy),
-      r: axis(1),
+      // The radial warp's argument is an ANGLE, and an angle wraps. `axis`
+      // draws fractional frequencies, which is right for the two edge warps
+      // — they run across the frame and never meet themselves — but around a
+      // circle a fractional frequency arrives back at theta = -pi holding a
+      // different value than it left at +pi. That step lands on the left of
+      // the frame, where atan2 wraps, and it is the notch cut into the
+      // silhouette there: not a rendering artefact but a boundary that
+      // genuinely disagrees with itself. Whole cycles round the circle make
+      // the two ends meet.
+      r: closed(axis(1)),
       // Per-side breathing. Opposite sides run in antiphase, so the window
       // squeezes on one side as it releases on the other — it slides and
       // squashes rather than just pulsing symmetrically.
@@ -954,50 +1143,102 @@
     var nxs = this._nxs, nys = this._nys;
     var inset = Math.max(0, Math.min(0.45, this.o.inset || 0));
     var morph = Math.max(0, Math.min(1, this.o.morph == null ? 0.6 : this.o.morph));
-
-    // How far the breathing may pull the boundary in, on top of the
-    // guaranteed margin. It only ever ADDS inset, so the floor survives.
-    var span = mp.band * 0.55 * morph;
+    var falloff = mp.falloff;
     var tp = TAU * phase;
 
+    // WHICH END MOVES. The warp and the breathing are applied to the CORE,
+    // and the outer end of the fade is left to `inset` alone. Putting them
+    // on the outer end — which is what this did — means reserving room for
+    // their outward swing, and that reserve came straight off the reach:
+    // the fade had to finish short of the frame by the warp's amplitude
+    // plus the breathing's, whether or not either was at its peak. Wobbling
+    // the core instead costs nothing, and it is the better place for it
+    // anyway: the core is where the ink is dense enough to see an outline
+    // move. It also self-damps — as the fade lengthens the outer end is
+    // pinned, so the wobble that reaches the visible boundary shrinks to
+    // nothing exactly when a wobbling silhouette would stop making sense.
     if (shape === "radial") {
+      // The outer limit, owned outright by `inset`.
+      var X = 1 - inset;
       var pulse = 0.5 + 0.5 * Math.sin(tp * mp.kr + mp.pr);
-      var insetR = inset + mp.warpMaxR + span * pulse;
-      var rw = this._radWarp, r = mp.r;
+      var breathe = mp.sband * 0.55 * morph * pulse;
+      var baseCore = mp.coreR * X;
+      var maxCore = X - 0.02;
+      var rOut = this._rOut, rInv = this._rInv, r = mp.r;
       var offA = r.p + r.m * tp, offB = r.p2 + r.m2 * tp;
+      // Per ANGLE rather than per radius: the table now carries the fade's
+      // two ends already divided through, so the per-cell path is one
+      // multiply and one subtract and the warp costs nothing extra.
       for (var i = 0; i < 256; i++) {
         var t = i / 256 - 0.5;
-        rw[i] = Math.sin(t * r.k + offA) * r.a + Math.sin(t * r.k2 + offB) * r.a2;
+        var core = baseCore + breathe +
+                   Math.sin(t * r.k + offA) * r.a + Math.sin(t * r.k2 + offB) * r.a2;
+        if (core > maxCore) core = maxCore; else if (core < 0.02) core = 0.02;
+        var bandR = (X - core) * falloff;
+        if (bandR < 1e-3) bandR = 1e-3;
+        var invR = 1 / bandR;
+        rInv[i] = invR;
+        rOut[i] = (core + bandR) * invR;   // tr = rOut[i] - rad * rInv[i]
       }
-      this._insetR = insetR;
       return;
     }
 
-    // Antiphase pairs: as sL grows, (1 - sL) shrinks.
+    // Antiphase pairs: as sL grows, (1 - sL) shrinks. This one is left on
+    // the frame rather than the core, because sliding the whole window is
+    // the point of it — so it is the one thing that still costs reach, and
+    // it is kept small enough for that to be a rounding error.
     var sL = 0.5 + 0.5 * Math.sin(tp * mp.kx + mp.px);
     var sT = 0.5 + 0.5 * Math.sin(tp * mp.ky + mp.py);
-    var iL = inset * mp.sx + mp.warpMaxX + span * mp.sx * sL;
-    var iR = inset * mp.sx + mp.warpMaxX + span * mp.sx * (1 - sL);
-    var iT = inset * mp.sy + mp.warpMaxY + span * mp.sy * sT;
-    var iB = inset * mp.sy + mp.warpMaxY + span * mp.sy * (1 - sT);
+    var spanF = (mp.sband < 0.035 ? mp.sband : 0.035) * 0.55 * morph;
+    var iL = inset * mp.sx + spanF * mp.sx * sL;
+    var iR = inset * mp.sx + spanF * mp.sx * (1 - sL);
+    var iT = inset * mp.sy + spanF * mp.sy * sT;
+    var iB = inset * mp.sy + spanF * mp.sy * (1 - sT);
 
     var colDist = this._colDist, rowDist = this._rowDist;
-    var warpRow = this._warpRow, warpCol = this._warpCol;
+    var xInv = this._xInv, xOut = this._xOut;
+    var yInv = this._yInv, yOut = this._yOut;
     var wx = mp.x, wy = mp.y;
     var xA = wx.p + wx.m * tp, xB = wx.p2 + wx.m2 * tp;
     var yA = wy.p + wy.m * tp, yB = wy.p2 + wy.m2 * tp;
+    var coreD = mp.coreD * (1 - 2 * inset);
+    var maxCoreD = 0.5 - inset;
 
+    // The anchor slides the window the mask describes, so the frame it fades
+    // against travels with the composition rather than staying stapled to the
+    // canvas. Sampled coordinates, not laid-out ones: a side pushed past the
+    // canvas simply never fades, which is what an off-centre anchor is for.
+    // One add per column and per row, so the per-cell path is untouched.
+    var org = this._origin();
+    var offX = 0.5 - org.x, offY = 0.5 - org.y;
+
+    // The x-fade's core undulates down the frame, so its two ends are a
+    // function of the ROW; the y-fade's of the column. Same division-free
+    // trick as the radial: the tables hold the ends already divided by the
+    // band they belong to.
     for (var x = 0; x < gw; x++) {
-      var nx = nxs[x];
+      var nx = nxs[x] + offX;
       var dl = nx - iL, dr = (1 - nx) - iR;
       colDist[x] = dl < dr ? dl : dr;
-      warpCol[x] = Math.sin(nx * wy.k + yA) * wy.a + Math.sin(nx * wy.k2 + yB) * wy.a2;
+      var cy = coreD + Math.sin(nx * wy.k + yA) * wy.a + Math.sin(nx * wy.k2 + yB) * wy.a2;
+      if (cy > maxCoreD) cy = maxCoreD; else if (cy < 0.01) cy = 0.01;
+      var by = cy * falloff;
+      if (by < 1e-3) by = 1e-3;
+      var iby = 1 / by;
+      yInv[x] = iby;
+      yOut[x] = (cy - by) * iby;           // ty = rowDist[y] * yInv[x] - yOut[x]
     }
     for (var y = 0; y < gh; y++) {
-      var ny = nys[y];
+      var ny = nys[y] + offY;
       var dt = ny - iT, db = (1 - ny) - iB;
       rowDist[y] = dt < db ? dt : db;
-      warpRow[y] = Math.sin(ny * wx.k + xA) * wx.a + Math.sin(ny * wx.k2 + xB) * wx.a2;
+      var cx = coreD + Math.sin(ny * wx.k + xA) * wx.a + Math.sin(ny * wx.k2 + xB) * wx.a2;
+      if (cx > maxCoreD) cx = maxCoreD; else if (cx < 0.01) cx = 0.01;
+      var bx = cx * falloff;
+      if (bx < 1e-3) bx = 1e-3;
+      var ibx = 1 / bx;
+      xInv[y] = ibx;
+      xOut[y] = (cx - bx) * ibx;           // tx = colDist[x] * xInv[y] - xOut[y]
     }
   };
 
@@ -1048,10 +1289,14 @@
       hi = this._fixedHi;
     } else if (o.levels) {
       var fmin = Infinity, fmax = -Infinity;
-      for (var m = 0; m < work.length; m++) {
-        var wv = work[m];
-        if (wv < fmin) fmin = wv;
-        if (wv > fmax) fmax = wv;
+      var lr = this._levelRect();
+      for (var ly = lr.y0; ly <= lr.y1; ly++) {
+        var lbase = ly * gw;
+        for (var lx = lr.x0; lx <= lr.x1; lx++) {
+          var wv = work[lbase + lx];
+          if (wv < fmin) fmin = wv;
+          if (wv > fmax) fmax = wv;
+        }
       }
       if (fmax - fmin < 1e-4) fmax = fmin + 1e-4;
       if (this._lo == null) { this._lo = fmin; this._hi = fmax; }
@@ -1069,10 +1314,10 @@
     var masked = o.shape !== "none";
     var radialMask = masked && o.shape === "radial";
     var colDist = this._colDist, rowDist = this._rowDist;
-    var warpRow = this._warpRow, warpCol = this._warpCol;
-    var radArr = this._rad, thetaIdx = this._thetaIdx, radWarp = this._radWarp;
-    var invBand = this._mp ? this._mp.invBand : 1;
-    var insetR = this._insetR || 0;
+    var xInvT = this._xInv, xOutT = this._xOut;
+    var yInvT = this._yInv, yOutT = this._yOut;
+    var radArr = this._rad, thetaIdx = this._thetaIdx;
+    var rOut = this._rOut, rInv = this._rInv;
     var out = this.imgData.data;
     var idxOut = this.indices;
     var pal = this.palFlat, np = this.palette.length;
@@ -1103,7 +1348,9 @@
       var rowBase = y * gw;
       // Hoisted per row: the only mask terms that vary with y.
       var rowD = masked && !radialMask ? rowDist[y] : 0;
-      var wRow = masked && !radialMask ? warpRow[y] : 0;
+      // The x-fade's two ends are constant down a row, so they hoist.
+      var xInv = masked && !radialMask ? xInvT[y] : 0;
+      var xOut = masked && !radialMask ? xOutT[y] : 0;
       for (var x = 0; x < gw; x++) {
         var p = rowBase + x;
 
@@ -1122,19 +1369,31 @@
         // scatters against.
         if (masked) {
           // Two smoothsteps over a pair of table lookups — the whole animated
-          // silhouette, with no trigonometry in the per-cell path.
+          // silhouette, with no trigonometry and no division in the per-cell
+          // path: the tables carry the fade's ends pre-divided by its band.
           var mv;
           if (radialMask) {
-            var tr = (1 - radArr[p] - insetR - radWarp[thetaIdx[p]]) * invBand;
+            var ti = thetaIdx[p];
+            var tr = rOut[ti] - radArr[p] * rInv[ti];
             if (tr < 0) tr = 0; else if (tr > 1) tr = 1;
             mv = tr * tr * (3 - 2 * tr);
           } else {
-            var tx = (colDist[x] + wRow) * invBand;
+            var tx = colDist[x] * xInv - xOut;
             if (tx < 0) tx = 0; else if (tx > 1) tx = 1;
-            var ty = (rowD + warpCol[x]) * invBand;
+            var ty = rowD * yInvT[x] - yOutT[x];
             if (ty < 0) ty = 0; else if (ty > 1) ty = 1;
             mv = tx * tx * (3 - 2 * tx) * ty * ty * (3 - 2 * ty);
           }
+          // Widen the mass without moving the boundary. A plain smoothstep
+          // puts its half-way point half-way along the band, so lengthening
+          // the gradient eats into the solid middle from both sides at once
+          // and a softer falloff reads as a SMALLER shape. Folding the curve
+          // back on itself pushes the half-way point out to about a third of
+          // the band: the fade still finishes exactly where it did, the flat
+          // core survives, and the gradient spends its length on a long
+          // outer tail — which is the part that dissolves into the page.
+          // Both ends keep a zero derivative, so nothing gains an edge.
+          mv = mv * (2 - mv);
           if (mv < 1) {
             var nv = 1 - mv;
             r = r * mv + pr * nv;
@@ -1267,7 +1526,18 @@
     // hence the reciprocal — and because rotation and uniform scale about the
     // same centre commute, the factor folds straight into the rotation matrix
     // and costs nothing extra per cell.
-    var shrink = 1 - 2 * inset;
+    //
+    // The fraction is `inset`, not twice it. The mask's margin is `inset` of
+    // the HALF-extent per side, so the window it leaves is `1 - inset` of the
+    // frame; shrinking by `1 - 2 * inset` squeezed the field into half that,
+    // and the difference does not show as a smaller composition — it shows as
+    // a washed-out one. The screen then samples far outside the field's own
+    // 0..1 domain, where a scene is only its gradient still climbing, and
+    // auto-levels measure the whole grid: those runaway values set the range
+    // and everything inside the window is squeezed into a fraction of the
+    // ramp. At the old factor a strong margin flattened the artwork to a
+    // plain wash, which is why `inset` could not be turned up far.
+    var shrink = 1 - inset;
     var invShrink = shrink > 0.05 ? 1 / shrink : 1;
 
     // Squash-and-stretch. Two octaves so it does not read as a single
@@ -1285,7 +1555,17 @@
 
     var ang = this._revolveAngle(phase, turns);
 
-    if (turns || inset > 0 || e !== 0) {
+    // The anchor. It is a translation of the SAMPLING grid, so the whole
+    // composition — gradient axis, blobs, the lot — moves as one rigid thing
+    // and keeps its proportions; only the part that still falls inside the
+    // frame is drawn. It is also the centre the composition revolves and
+    // squashes about, so an anchored composition turns about its own anchor
+    // instead of pivoting around a frame centre it no longer occupies.
+    var org = this._origin();
+    var ox = org.x, oy = org.y;
+    var anchored = ox !== 0.5 || oy !== 0.5;
+
+    if (turns || inset > 0 || e !== 0 || anchored) {
       var c = Math.cos(ang) * invShrink, s = Math.sin(ang) * invShrink;
 
       // Rotate, then scale the two screen axes by reciprocal factors. Folding
@@ -1303,9 +1583,9 @@
       for (y = 0; y < gh; y++) {
         ny = y * invH;
         row = y * gw;
-        var dy = ny - 0.5;
+        var dy = ny - oy;
         for (x = 0; x < gw; x++) {
-          var dx = (x * invW - 0.5) * asp;
+          var dx = (x * invW - ox) * asp;
           var rx = (dx * a11 + dy * a12) * invAsp + 0.5;
           var ry = (dx * a21 + dy * a22) + 0.5;
           work[row + x] = atB
@@ -1397,6 +1677,7 @@
     create: function (opts) { return new BitMotionInstance(opts); },
     RAMPS: RAMPS,
     BACKGROUNDS: BACKGROUNDS,
+    ORIGINS: ORIGINS,
     SCENES: SCENE_NAMES,
     COLORS: HS,
     hexToRgb: hexToRgb

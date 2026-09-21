@@ -151,6 +151,36 @@
   }
   .check { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; color: var(--fg-soft); }
 
+  /* Origin: the nine anchor points, drawn as the frame they describe. The
+     dots sit ON the rectangle's corners, edges and centre, so the control is
+     a picture of what it does rather than a list of nine names. */
+  .origin {
+    position: relative;
+    width: 100%;
+    max-width: 128px;
+    aspect-ratio: 16 / 10;
+    margin: 6px 0 4px;
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    background: #fff;
+  }
+  .origin button {
+    position: absolute;
+    width: 15px; height: 15px;
+    margin: -7.5px 0 0 -7.5px;   /* centre each dot on its point */
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: var(--rule);
+    transition: background 0.12s linear, transform 0.12s ease-out;
+  }
+  .origin button:hover { background: var(--fg-faint); }
+  .origin button[aria-pressed="true"] {
+    background: var(--blue);
+    transform: scale(1.12);
+  }
+  .origin button:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+
   #go {
     background: var(--ink); color: var(--paper);
     border-color: var(--ink); font-weight: 600; height: 34px;
@@ -247,6 +277,10 @@
         <option value="none">Full bleed</option>
       </select>
     </div>
+    <div class="field" id="originField">
+      <label>Origin <span class="val" id="originV">Center</span></label>
+      <div class="origin" id="origin" role="group" aria-label="Composition origin"></div>
+    </div>
     <div class="field">
       <label for="cell">Block size <span class="val" id="cellV">3px</span></label>
       <input type="range" id="cell" min="2" max="28" step="1" value="3">
@@ -266,8 +300,8 @@
     </div>
     -->
     <div class="field">
-      <label for="falloff">Falloff reach <span class="val" id="falloffV">0.45</span></label>
-      <input type="range" id="falloff" min="0.05" max="1" step="0.01" value="0.45">
+      <label for="falloff">Falloff reach <span class="val" id="falloffV">0.70</span></label>
+      <input type="range" id="falloff" min="0.05" max="1" step="0.01" value="0.7">
     </div>
     <div class="field">
       <label for="blobs">Blobs <span class="val" id="blobsV">5</span></label>
@@ -279,7 +313,7 @@
     </div>
     <div class="field">
       <label for="inset">Margin <span class="val" id="insetV">0.04</span></label>
-      <input type="range" id="inset" min="0" max="0.2" step="0.01" value="0.04">
+      <input type="range" id="inset" min="0" max="0.3" step="0.01" value="0.04">
     </div>
     <div class="field">
       <label for="exposure">Exposure <span class="val" id="exposureV">0.00</span></label>
@@ -300,6 +334,10 @@
     <div class="field">
       <label for="fps">Frame cap <span class="val" id="fpsV">20</span></label>
       <input type="range" id="fps" min="6" max="30" step="1" value="20">
+    </div>
+    <div class="field">
+      <label for="phase">Phase <span class="val" id="phaseV">0.00</span></label>
+      <input type="range" id="phase" min="0" max="0.995" step="0.005" value="0">
     </div>
     <div class="field">
       <label>Composition</label>
@@ -433,6 +471,40 @@
     refreshPlan();
   }
 
+  // Origin. Nine dots on the rectangle they anchor to — positioned from the
+  // engine's own coordinates, so the control cannot drift from what the
+  // engine does with them.
+  var originBox = document.getElementById("origin");
+  var originOut = document.getElementById("originV");
+  var ORIGIN_LABELS = {
+    "top-left": "Top left", "top": "Top", "top-right": "Top right",
+    "left": "Left", "center": "Center", "right": "Right",
+    "bottom-left": "Bottom left", "bottom": "Bottom", "bottom-right": "Bottom right"
+  };
+
+  Object.keys(BitMotion.ORIGINS).forEach(function (n) {
+    var p = BitMotion.ORIGINS[n];
+    var b = document.createElement("button");
+    b.type = "button";
+    b.dataset.origin = n;
+    b.style.left = (p[0] * 100) + "%";
+    b.style.top = (p[1] * 100) + "%";
+    b.title = ORIGIN_LABELS[n];
+    b.setAttribute("aria-label", "Origin " + ORIGIN_LABELS[n]);
+    b.setAttribute("aria-pressed", String(n === bm.o.origin));
+    b.addEventListener("click", function () { pickOrigin(n); });
+    originBox.appendChild(b);
+  });
+
+  function pickOrigin(n) {
+    bm.setOption("origin", n);
+    originOut.textContent = ORIGIN_LABELS[n];
+    Array.prototype.forEach.call(originBox.children, function (b) {
+      b.setAttribute("aria-pressed", String(b.dataset.origin === n));
+    });
+    refreshSnippet();
+  }
+
   ["mode", "scene", "ramp", "dither", "shape"].forEach(function (id) {
     var el = document.getElementById(id);
     if (!el) return;
@@ -490,6 +562,21 @@
     else { bm.play(); toggle.textContent = "Pause"; }
   });
 
+  // Phase. Scrubbing a running animation fights itself, so a drag pauses
+  // first — the slider then tracks playback again the moment Play is
+  // pressed, because the readout wrapper writes the position back every
+  // frame. In "loop" mode this is the exact cycle the exporter will render;
+  // in "flow" it is the first cycle of one, which is still the right way to
+  // hold a frame still and look at it.
+  var phaseEl = document.getElementById("phase");
+  var phaseOut = document.getElementById("phaseV");
+  phaseEl.addEventListener("input", function () {
+    if (bm.running) { bm.pause(); toggle.textContent = "Play"; }
+    var v = parseFloat(phaseEl.value);
+    phaseOut.textContent = v.toFixed(2);
+    bm.seek(v * bm.o.loopSeconds);
+  });
+
   var solo = document.getElementById("solo");
   solo.addEventListener("click", function () {
     document.body.classList.toggle("solo");
@@ -512,6 +599,13 @@
     render(t);
     sum += performance.now() - a;
     frames++;
+    // Follow the animation with the scrubber. Setting `value` fires no
+    // input event, so this cannot loop back into the handler above.
+    if (bm.running) {
+      var ph = (t / bm.o.loopSeconds) % 1;
+      phaseEl.value = ph;
+      phaseOut.textContent = ph.toFixed(2);
+    }
   };
   setInterval(function () {
     var now = performance.now();
@@ -533,12 +627,12 @@
   // Only the options that actually differ from the engine defaults, so the
   // snippet stays readable instead of restating the whole config object.
   var SNIPPET_KEYS = ["scene", "ramp", "background", "mode", "dither", "shape",
-                      "falloff", "cellSize", "maxCells", "revolve", "inset",
+                      "origin", "falloff", "cellSize", "maxCells", "revolve", "inset",
                       "morph", "blobs", "exposure", "contrast", "loopSeconds",
                       "fps"];
   var DEFAULTS_FOR_SNIPPET = {
     scene: "drift", ramp: "dissolve", background: "#FAF8F7", mode: "flow",
-    dither: "atkinson", shape: "edges", falloff: 0.45, cellSize: 3,
+    dither: "atkinson", shape: "edges", origin: "center", falloff: 0.7, cellSize: 3,
     maxCells: 0, revolve: 1, inset: 0.04, morph: 0.6, blobs: 5, exposure: 0,
     contrast: 1, loopSeconds: 14, fps: 20
   };

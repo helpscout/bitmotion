@@ -1,0 +1,109 @@
+<!doctype html>
+<!-- Scratch harness: paints the falloff MASK on its own, with no field, no
+     ramp and no dither, so the silhouette and its gradient can be read
+     directly instead of inferred through the artwork. Not part of the
+     library or the playground. -->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>BitMotion — mask</title>
+<style>
+  body { margin: 0; background: #000; color: #888; font: 12px ui-monospace, Menlo, monospace; padding: 20px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 30px; max-width: 1400px; }
+  figure { margin: 0; position: relative; }
+  canvas { display: block; width: 100%; background: #fff; }
+  figcaption { position: absolute; left: 0; right: 0; top: 50%; text-align: center; transform: translateY(-50%); }
+  .bar { display: flex; gap: 18px; align-items: center; margin-bottom: 18px; }
+  input[type=range] { width: 220px; }
+</style>
+</head>
+<body>
+<div class="bar">
+  <label>shape <select id="shape"><option value="radial">radial</option><option value="edges">edges</option></select></label>
+  <label>falloff <input type="range" id="falloff" min="0.05" max="1" step="0.01" value="0.45"> <b id="fv">0.45</b></label>
+  <label>inset <input type="range" id="inset" min="0" max="0.2" step="0.01" value="0.04"> <b id="iv">0.04</b></label>
+  <label>morph <input type="range" id="morph" min="0" max="1" step="0.05" value="0.6"> <b id="mv">0.60</b></label>
+  <label>phase <input type="range" id="phase" min="0" max="0.99" step="0.01" value="0.25"> <b id="pv">0.25</b></label>
+  <button id="seedBtn">reseed</button>
+</div>
+<div class="grid" id="grid"></div>
+
+<script src="bitmotion.js"></script>
+<script>
+(function () {
+  var W = 260, H = 148;                 // same 16:9-ish proportion as the reference
+  var NAMES = ["top-left", "top", "top-right", "left", "center", "right",
+               "bottom-left", "bottom", "bottom-right"];
+  var seed = 12345;
+  var cells = NAMES.map(function (name) {
+    var fig = document.createElement("figure");
+    var c = document.createElement("canvas");
+    c.width = W; c.height = H;
+    var cap = document.createElement("figcaption");
+    cap.textContent = name;
+    fig.appendChild(c); fig.appendChild(cap);
+    document.getElementById("grid").appendChild(fig);
+    return { name: name, canvas: c, ctx: c.getContext("2d") };
+  });
+
+  function val(id) { return parseFloat(document.getElementById(id).value); }
+
+  function draw() {
+    var shape = document.getElementById("shape").value;
+    var phase = val("phase");
+    cells.forEach(function (cell) {
+      var off = document.createElement("canvas");
+      var bm = BitMotion.create({
+        canvas: off, grid: { w: W, h: H }, size: { w: W, h: H },
+        shape: shape, origin: cell.name, falloff: val("falloff"),
+        inset: val("inset"), morph: val("morph"),
+        autoplay: false, mode: "loop", seed: seed
+      });
+      bm._prepMask(phase);
+      var img = cell.ctx.createImageData(W, H);
+      var d = img.data;
+      for (var y = 0; y < H; y++) {
+        for (var x = 0; x < W; x++) {
+          var p = y * W + x, m;
+          if (shape === "radial") {
+            var ti = bm._thetaIdx[p];
+            var tr = bm._rOut[ti] - bm._rad[p] * bm._rInv[ti];
+            tr = tr < 0 ? 0 : tr > 1 ? 1 : tr;
+            m = tr * tr * (3 - 2 * tr);
+          } else {
+            var tx = bm._colDist[x] * bm._xInv[y] - bm._xOut[y];
+            tx = tx < 0 ? 0 : tx > 1 ? 1 : tx;
+            var ty = bm._rowDist[y] * bm._yInv[x] - bm._yOut[x];
+            ty = ty < 0 ? 0 : ty > 1 ? 1 : ty;
+            m = tx * tx * (3 - 2 * tx) * ty * ty * (3 - 2 * ty);
+          }
+          m = m * (2 - m);
+          var v = 255 - Math.round(m * 255);   // mask 1 = ink, 0 = paper
+          var o = p * 4;
+          d[o] = d[o + 1] = d[o + 2] = v;
+          d[o + 3] = 255;
+        }
+      }
+      cell.ctx.putImageData(img, 0, 0);
+      bm.destroy();
+    });
+  }
+
+  ["shape", "falloff", "inset", "morph", "phase"].forEach(function (id) {
+    var el = document.getElementById(id);
+    el.addEventListener("input", function () {
+      var out = document.getElementById(id[0] + "v");
+      if (out) out.textContent = parseFloat(el.value).toFixed(2);
+      draw();
+    });
+    el.addEventListener("change", draw);
+  });
+  document.getElementById("seedBtn").addEventListener("click", function () {
+    seed = (Math.random() * 1e9) | 0; draw();
+  });
+  draw();
+  window.maskDraw = draw;
+})();
+</script>
+</body>
+</html>

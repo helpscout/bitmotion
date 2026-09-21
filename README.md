@@ -23,6 +23,7 @@ the whole workflow. Then read Performance before putting it on a real page.
 | `embed-example.html` | Reference | A complete working hero, configured the way it should ship. Copy the pattern, not the file. |
 | `index.html` | **No** | Playground for choosing a look and exporting previews. Internal tool. The Field, Quantiser and Cell-ceiling controls are commented out in the markup rather than deleted — the JS checks for each element before binding, so putting one back is a markup-only edit. |
 | `bitmotion-export.js` | **No** | GIF / video / PNG-sequence encoders for the playground. Has no place on a production page — it roughly doubles the payload for something a visitor never uses. |
+| `mask-test.html` | **No** | Scratch harness: paints the falloff mask on its own — no field, no ramp, no dither — as a 3×3 grid of the nine anchors, with live `falloff` / `inset` / `morph` / phase sliders. The silhouette and its gradient are hard to judge through the artwork, and impossible to judge through the dither; this shows the mask itself. Reach for it before touching anything in `_maskParams` or `_prepMask`. |
 
 ## Running it
 
@@ -222,9 +223,10 @@ not a flag. Not implemented here.
 | --- | --- | --- |
 | `scene` | `"drift"` | `drift`, `waves`, `bloom`, `ribbon`, `nebula`, or `null` to cycle all. |
 | `ramp` | `"dissolve"` | `dissolve`, `bleed`, `warm`, `cool`, `duo`, `ink`, or an array of `[stop, hex]` pairs. |
-| `shape` | `"edges"` | Falloff mask: `edges`, `radial`, `none`. |
-| `falloff` | `0.45` | 0–1, how far the fade reaches in from the frame. |
-| `inset` | `0.04` | Reserved paper margin as a fraction of the **short edge**, converted per axis so the margin is the same number of pixels on all four sides. Also shrinks the field to match, so the composition fits the margin rather than being clipped by it. Raise it for more whitespace; this is what keeps an exported frame off its own edges. |
+| `shape` | `"edges"` | Falloff mask: `edges`, `radial`, `none`. `radial` is a true circle measured in pixels, sized to the *farthest* frame edge, so on a frame that is not square it runs off the near sides — see the note below. |
+| `origin` | `"center"` | Where the composition is anchored in the frame: one of the nine grid points — `top-left`, `top`, `top-right`, `left`, `center`, `right`, `bottom-left`, `bottom`, `bottom-right` — or an `{x, y}` pair in 0–1 for anything between them. The field and its falloff move together, so the composition keeps its size and simply hangs off the side it is pinned to: a corner anchor leaves a quarter of it in frame and the rest outside. Nothing is laid out, only sampled, so the part outside costs nothing and cannot make the page scroll. |
+| `falloff` | `0.7` | 0–1, how far the edge blurs **outward**. The silhouette has a fixed core and the fade grows out from it into the paper beyond, reaching the frame (less `inset`) at `1`. So softening makes the shape wider and taller, and `0` is the same shape with a hard edge. Size and softness move together; `inset` is what pulls the whole thing in. For `radial` on a non-square frame there is a value on the way up — around `0.35` at 16:10, lower the wider the frame — where the circle stops fitting between the near edges and starts running off them. |
+| `inset` | `0.04` | Reserved paper margin as a fraction of the **short edge**. It holds on every side for `edges`, and for `radial` on the axis the circle is sized to — a big circle on a wide frame deliberately crosses the top and bottom, so there is no margin to keep there, converted per axis so the margin is the same number of pixels on all four sides. Also shrinks the field by the same fraction, so the composition fits the margin rather than being clipped by it. Raise it for more whitespace; this is what keeps an exported frame off its own edges. |
 | `dither` | `"atkinson"` | `atkinson` (Bitmaker's), `bayer` (ordered, temporally calmer), `none` (flat blocks). |
 | `exposure` | `0` | −1…1. Negative shows more paper. |
 | `contrast` | `1` | >1 widens flat areas, <1 widens the stipple. |
@@ -306,11 +308,92 @@ value toward zero walks each edge cell *down the ramp* through yellow and
 coral, painting a visible border ring around the frame. Blending the resulting
 colour toward paper instead lets each cell dissolve straight into the page.
 
+**A strong margin has to move three things, not one.** `inset` pulls the
+mask in, shrinks the field to match, and moves the window auto-levels measure
+inside. Miss either of the last two and turning the margin up flattens the
+artwork instead of framing it: the field gets squeezed into the window, the
+screen outside it samples far beyond the scene's own 0..1 domain — where
+`drift` is just its gradient still climbing — and levels taken over the whole
+grid hand the range to those runaway values, leaving what is actually on show
+inside a fraction of the ramp. The shrink is `1 - inset`, matching the window
+the mask leaves rather than half of it, and the levels pass reads only that
+window. Skipping the rest costs nothing: it is under paper. Full bleed has no
+paper, so there the whole grid is measured as before.
+
+**The fade grows outward from a pinned core, not inward from the frame.**
+Which end of the band is nailed down decides what softening *does*. Anchored
+at the frame — where this started — the only end that cannot move is the
+outer one, so lengthening the gradient ate the solid core from both sides and
+a softer falloff drew the composition in: exactly backwards. The core is the
+pinned end now, at `CORE_R` of the way from the anchor to the frame, and the
+band grows out from it into the paper beyond, reaching the frame at
+`falloff` 1. Blur the edge and the shape gets bigger, which is what blurring
+an edge does.
+
+**The warp and the breathing move the CORE, not the outer end — which is
+where the reach comes from.** Anything that displaces the outer end has to be
+*reserved* against `inset`: the fade must finish short of the frame by the
+warp's full amplitude plus the breathing's, at every angle and every phase,
+or the peaks would cross the margin. That reserve came straight off the
+reach, whether or not anything was at its peak. Wobbling the core costs
+nothing, and it is the better place for it anyway — the core is where the ink
+is dense enough to read an outline moving. It also self-damps: the outer end
+is pinned, so the share of the wobble that reaches the visible boundary
+scales with `1 - falloff` and disappears exactly when a wobbling silhouette
+would stop making sense. `inset` now owns the outer limit outright, and the
+only thing still spending reach is the per-side breathing of the frame
+itself, which is kept to about a percent because sliding the whole window is
+the point of it.
+
+**The mask tables carry the fade's two ends already divided by their band.**
+Wobbling the core means the band's *length* varies — per angle for the
+radial, per row and per column for the edges — so the per-cell path would
+need a divide. Precomputing `1/band` and `outer/band` into the same tables
+that already existed turns it back into one multiply and one subtract, which
+is fewer operations than the add-multiply-plus-warp-lookup it replaced.
+
+**The mask curve is folded back on itself: `m * (2 - m)`.** A plain smoothstep
+puts its half-way point half-way along the band, which spends half the fade
+looking like a soft edge and half looking like nothing. Folding the curve
+moves that point out to about a third of the band from the outer end: the
+mass reaches further into the fade and the rest is a long, light tail — the
+part the dither scatters into the page. Both ends keep a zero derivative, so
+nothing gains an edge.
+
+**The radial mask is a circle in PIXELS, sized to the farthest edge.** Two
+separate things were wrong with measuring it per axis in normalised
+coordinates, where 1 means the half-width horizontally and the half-height
+vertically. It makes the shape an oval stretched to the frame rather than a
+circle. And when the radius was additionally normalised by the half-diagonal
+it put the entire fade band *outside* the canvas along the long axis — the
+mask still near-opaque where the pixels ran out, the dither stopping against
+a hard vertical line, which is the bug this all started with.
+
+Distance is measured in cells, which are square, so it is a distance in
+pixels and the shape is round. The unit is the distance from the anchor to
+the farthest frame edge, so `falloff` 1 is a circle that reaches the far
+side. A circle that big cannot also stay inside the near sides of a frame
+that is not square, and it should not: it runs off them, the way a circle
+fills a rectangle, which is what a banner wants and what the reference
+artwork does. Winding `falloff` down shrinks it back inside; on a square
+frame it never crosses an edge at any setting. The fade always finishes
+inside the frame on the axis it is measured against, so `inset` still holds
+there.
+
+**The radial warp runs at whole cycles around the circle.** Its argument is an
+angle, and an angle wraps: a fractional frequency comes back to `theta = -pi`
+holding a different value than it left at `+pi`. That step falls on the left of
+the frame, where `atan2` wraps, and shows as a notch cut into the silhouette —
+a boundary disagreeing with itself, not a rendering artefact. The two edge
+warps keep their fractional frequencies, because they run across the frame and
+never meet themselves.
+
 **The falloff mask edge is warped, and the warp is small on purpose.** A
 straight edge-distance mask produces a rounded rectangle, which at high cell
-counts reads as a vignette framing the art. The warp amplitude is a *fraction
-of the fade band* at under one cycle across the frame; larger amplitudes
-scallop the silhouette into what looks like a decorative badge.
+counts reads as a vignette framing the art. The warp amplitude follows the band while the band
+is short and saturates gently after that, at under one cycle across the
+frame; larger amplitudes scallop the silhouette into what looks like a
+decorative badge.
 
 **`drift` is gradient-dominant with `gain > 1`.** The gradient sweeps past both
 ends of the ramp, so the frame holds flat fields of the extreme colours with
@@ -344,13 +427,29 @@ VP9 is preferred over it entirely. Requested bitrates are deliberately far
 above what either encoder uses, so that quality is never limited by the
 budget; see Video quality in the performance section for the measurements.
 
-**`inset` measures from the warp's outer envelope, not its average.** The mask
-warp is bipolar, so at its positive peaks it pushes the boundary *outward*. An
-inset applied naively is therefore an average margin, not a floor, and the
-artwork can still reach the frame edge on some sides — which is exactly how a
-GIF ends up looking cropped. Subtracting the envelope bound (`band * 0.56`,
-from the amplitudes chosen in `axis()`) makes the margin a guarantee. If you
-change those amplitudes, change that constant to match.
+**`inset` used to measure from the warp's outer envelope, and now nothing
+displaces the outer end at all.** Worth knowing if you move the warp back:
+the warp is bipolar, so at its positive peaks it pushes the boundary
+*outward*. An inset applied naively to a boundary like that is an average
+margin, not a floor, and the artwork can still touch the frame on some sides
+— which is exactly how a GIF ends up looking cropped. The fix then was to
+subtract the envelope bound; the fix now is that the warp and the breathing
+are applied to the core instead, so the outer end is `inset` and nothing
+else. Anything you add that moves the outer end has to pay for its own
+envelope out of the reach.
+
+**`mode` is baked in, not read per frame.** `detuner` is consulted when a
+composition and a mask are *built*: in "loop" it leaves every rate at whole
+cycles per loop, which is the only reason the seam closes, and in "flow" it
+detunes them off each other so nothing ever repeats. Both capture that at
+build time, so `setOption("mode", …)` has to rebuild the field and the mask
+params — without it, switching to Loop leaves a piece whose every part ends
+the cycle somewhere other than where it began, and the loop cuts at the wrap.
+To check a change here, compare the seam against an ordinary frame step:
+render N frames across the cycle, take the fraction of palette indices that
+differ between neighbours, and the wrap should sit at the median of the
+rest. A broken loop reads about twice that — the dither alone churns ~15% of
+cells between any two frames, so eyeballing a still will not tell you.
 
 **A linear gradient can only make parallel bands.** That is worth stating
 plainly, because it is why `drift` used to look predictable: with the gradient
