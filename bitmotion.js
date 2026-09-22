@@ -11,6 +11,12 @@
  *
  *   BitMotion.create({ canvas: "#hero", cellSize: 4, maxCells: 200000 });
  *
+ * Or let the markup do it — every [data-bitmotion] element is mounted once
+ * the DOM is ready, and init() picks up anything added after that:
+ *
+ *   <canvas data-bitmotion data-bitmotion-scene="waves"></canvas>
+ *   BitMotion.init();
+ *
  * Palette entries equal to `background` render fully transparent, so the
  * animation dissolves seamlessly into whatever the page sits on.
  *
@@ -1668,13 +1674,167 @@
     window.removeEventListener("resize", this._onResize);
     document.removeEventListener("visibilitychange", this._onVis);
     if (this._io) this._io.disconnect();
+    unmount(this); // drops the element registration `init` made, if any
     return this;
   };
+
+  /* ----------------------------------------------------------------- mount */
+
+  // Page-level entry point. `<canvas data-bitmotion></canvas>` is enough to
+  // get an animation with no script of your own: the mount pass below runs
+  // once the DOM is ready and again whenever you call `init()`.
+  //
+  // Options come from two places, and the later one wins:
+  //   data-bitmotion='{"scene":"waves","cellSize":4}'   JSON, all at once
+  //   data-bitmotion-scene="waves" data-bitmotion-cell-size="4"
+  // The attribute form exists because CMS fields and template engines make
+  // quoting a JSON blob miserable; the two mix freely on one element.
+  //
+  // `data-bitmotion` on something other than a canvas fills that element with
+  // one, so a container you have already sized in CSS needs no extra markup.
+
+  var mounted = []; // [{ el, instance }] — a page has a handful of these at most
+
+  function mountedFor(el) {
+    for (var i = 0; i < mounted.length; i++) if (mounted[i].el === el) return mounted[i].instance;
+    return null;
+  }
+
+  // Called from `destroy` so a torn-down element can be mounted again later.
+  function unmount(instance) {
+    for (var i = 0; i < mounted.length; i++) {
+      if (mounted[i].instance === instance) { mounted.splice(i, 1); return; }
+    }
+  }
+
+  function warn(msg, detail) {
+    if (typeof console !== "undefined" && console.warn) console.warn("BitMotion: " + msg, detail);
+  }
+
+  // Attribute values arrive as strings. Numbers and booleans are the common
+  // case; anything that parses as JSON (an array of ramp stops, an {x, y}
+  // origin) is taken as written, and everything else stays a string.
+  function parseValue(raw) {
+    var s = String(raw).trim();
+    if (s === "") return true; // bare attribute reads as a flag
+    if (s === "true") return true;
+    if (s === "false") return false;
+    if (s === "null") return null;
+    if (/^-?\d+(\.\d+)?$/.test(s)) return parseFloat(s);
+    if (s.charAt(0) === "{" || s.charAt(0) === "[") {
+      try { return JSON.parse(s); } catch (err) { return s; }
+    }
+    return s;
+  }
+
+  function camelCase(s) {
+    return s.replace(/-([a-z])/g, function (_, c) { return c.toUpperCase(); });
+  }
+
+  function readOptions(el) {
+    var opts = {}, k;
+    var json = (el.getAttribute("data-bitmotion") || "").trim();
+    if (json) {
+      try {
+        var parsed = JSON.parse(json);
+        if (parsed && typeof parsed === "object") for (k in parsed) opts[k] = parsed[k];
+      } catch (err) {
+        // A malformed blob is a typo in a template, not a reason to leave the
+        // page blank: fall back to the defaults and say so once.
+        warn("could not parse the data-bitmotion JSON on", el);
+      }
+    }
+    var attrs = el.attributes;
+    for (var i = 0; i < attrs.length; i++) {
+      var name = attrs[i].name;
+      if (name.indexOf("data-bitmotion-") !== 0) continue;
+      k = camelCase(name.slice(15));
+      if (k) opts[k] = parseValue(attrs[i].value);
+    }
+    delete opts.canvas; // the element decides this, not the markup
+    return opts;
+  }
+
+  // The canvas to draw into: the element itself when it is one, otherwise a
+  // child that fills it. The child is tagged so a second mount reuses it
+  // rather than stacking canvases.
+  function canvasFor(el) {
+    if (String(el.tagName).toLowerCase() === "canvas") return el;
+    for (var i = 0; i < el.children.length; i++) {
+      if (el.children[i].hasAttribute("data-bitmotion-canvas")) return el.children[i];
+    }
+    var c = (el.ownerDocument || document).createElement("canvas");
+    c.setAttribute("data-bitmotion-canvas", "");
+    c.style.display = "block";
+    c.style.width = "100%";
+    c.style.height = "100%";
+    el.appendChild(c);
+    return c;
+  }
+
+  function toElements(target) {
+    if (typeof document === "undefined") return [];
+    if (target == null) target = "[data-bitmotion]";
+    if (typeof target === "string") return [].slice.call(document.querySelectorAll(target));
+    if (target.nodeType === 1) return [target];
+    if (typeof target.length === "number") return [].slice.call(target);
+    return [];
+  }
+
+  // init()                       -> every [data-bitmotion] element on the page
+  // init(".hero")                -> a selector, element, NodeList or array
+  // init(".hero", { seed: 12 })  -> same, with options that beat the markup
+  //
+  // Idempotent: an element that is already running is left alone and its
+  // existing instance returned, so it is safe to call after injecting markup.
+  function init(target, overrides) {
+    var els = toElements(target), out = [];
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      var existing = mountedFor(el);
+      if (existing) { out.push(existing); continue; }
+
+      var opts = readOptions(el), k;
+      if (overrides) for (k in overrides) if (overrides[k] !== undefined) opts[k] = overrides[k];
+      opts.canvas = canvasFor(el);
+
+      var instance;
+      try {
+        instance = new BitMotionInstance(opts);
+      } catch (err) {
+        // One bad element must not take the rest of the page down with it.
+        warn("could not start on an element: " + (err && err.message), el);
+        continue;
+      }
+      mounted.push({ el: el, instance: instance });
+      out.push(instance);
+    }
+    return out;
+  }
+
+  // Mount whatever is already in the markup. Inert on a page with no
+  // `data-bitmotion` attribute, and skipped entirely where there is no DOM at
+  // all, so importing this during server-side rendering does nothing.
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", function () { init(); });
+    } else {
+      init();
+    }
+  }
 
   /* -------------------------------------------------------------- exports */
 
   return {
     create: function (opts) { return new BitMotionInstance(opts); },
+    init: init,
+    get: function (target) {
+      var els = toElements(target);
+      return els.length ? mountedFor(els[0]) : null;
+    },
+    destroyAll: function () {
+      while (mounted.length) mounted[0].instance.destroy();
+    },
     RAMPS: RAMPS,
     BACKGROUNDS: BACKGROUNDS,
     ORIGINS: ORIGINS,

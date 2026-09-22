@@ -15,6 +15,43 @@ the whole workflow. Then read Performance before putting it on a real page.
 
 ---
 
+## Install
+
+```bash
+npm install @helpscout/bitmotion
+```
+
+Published publicly under MIT — no npm auth, no private registry.
+
+```js
+import BitMotion from "@helpscout/bitmotion";      // bundler or Node ESM
+const BitMotion = require("@helpscout/bitmotion"); // CommonJS
+```
+
+The package is a single dependency-free UMD file, so the same build also drops
+straight into a `<script>` tag and leaves `BitMotion` on the window — which is
+what the examples in this repo do:
+
+```html
+<script src="node_modules/@helpscout/bitmotion/bitmotion.js"></script>
+```
+
+or straight off a CDN, with no install at all:
+
+```html
+<script src="https://cdn.jsdelivr.net/npm/@helpscout/bitmotion"></script>
+```
+
+Pin the version (`@helpscout/bitmotion@1.0.0`) on anything you ship — an
+unpinned CDN URL moves under you on the next release.
+
+TypeScript declarations ship with it. The GIF / video / PNG tooling is a
+separate entry point, `@helpscout/bitmotion/export`, and belongs in tooling
+rather than on a live page.
+
+Importing it during a server-side render is inert: with no DOM there is nothing
+to mount and `window` is never touched.
+
 ## Files
 
 | File | Ship it? | What it is |
@@ -23,12 +60,14 @@ the whole workflow. Then read Performance before putting it on a real page.
 | `embed-example.html` | Reference | A complete working hero, configured the way it should ship. Copy the pattern, not the file. |
 | `index.html` | **No** | Playground for choosing a look and exporting previews. Internal tool. The Field, Quantiser and Cell-ceiling controls are commented out in the markup rather than deleted — the JS checks for each element before binding, so putting one back is a markup-only edit. |
 | `bitmotion-export.js` | **No** | GIF / video / PNG-sequence encoders for the playground. Has no place on a production page — it roughly doubles the payload for something a visitor never uses. |
+| `package.json`, `LICENSE`, `bitmotion.d.ts`, `bitmotion-export.d.ts` | Packaging | npm metadata and TypeScript declarations. The `files` field is what ships: the two runtime files, their types and this README. |
+| `test/smoke.mjs` | **No** | `npm test`. Stands up the smallest DOM the engine touches and drives the mount layer against it — attribute parsing, precedence, containers, idempotency, teardown. Not a pixel test. |
 | `mask-test.html` | **No** | Scratch harness: paints the falloff mask on its own — no field, no ramp, no dither — as a 3×3 grid of the nine anchors, with live `falloff` / `inset` / `morph` / phase sliders. The silhouette and its gradient are hard to judge through the artwork, and impossible to judge through the dither; this shows the mask itself. Reach for it before touching anything in `_maskParams` or `_prepMask`. |
 
 ## Running it
 
-There is no build step and nothing to install. **Open `index.html` in a
-browser** — double-clicking it off the filesystem is enough. Everything is
+The playground has no build step and no dependencies of its own. **Open
+`index.html` in a browser** — double-clicking it off the filesystem is enough. Everything is
 plain classic `<script>` tags in the same directory, with no `fetch`, no ES
 modules and no external assets beyond a Google Fonts stylesheet that has a
 fallback stack, so `file://` has nothing to trip over.
@@ -77,6 +116,45 @@ Three rules:
 `reseed(n)`, `setOption(key, value)` and `destroy()`. Call `destroy()` on
 teardown in a SPA — it releases the resize listener and the
 IntersectionObserver.
+
+### Mounting from markup
+
+Every `[data-bitmotion]` element on the page is mounted once the DOM is ready,
+so a canvas and an attribute are enough — no script of your own:
+
+```html
+<canvas data-bitmotion='{"cellSize":3,"maxCells":200000,"seed":1834027461}'
+        style="width:100%;height:460px"></canvas>
+<script src="/assets/bitmotion.js"></script>
+```
+
+Options can also be written one per attribute, which is far easier inside a
+template or a CMS field. The name is the option in kebab-case, values are
+coerced (`"3"` to a number, `"false"` to a boolean, a bare attribute to `true`,
+anything JSON-shaped parsed as JSON), and an attribute beats the same key in
+the JSON blob:
+
+```html
+<canvas data-bitmotion
+        data-bitmotion-scene="waves"
+        data-bitmotion-cell-size="3"
+        data-bitmotion-max-cells="200000"></canvas>
+```
+
+Put `data-bitmotion` on something that is not a canvas and it gets one that
+fills it — useful when the sizing already lives on a wrapper. A malformed JSON
+blob warns and falls back to the defaults rather than leaving the page blank.
+
+Three calls manage what the markup started:
+
+| Call | What it does |
+| --- | --- |
+| `BitMotion.init(target?, overrides?)` | Mounts markup that arrived after load. `target` is a selector, element, NodeList or array, and defaults to `[data-bitmotion]`; `overrides` beat the attributes. An element already running is returned untouched, so calling it repeatedly is safe. |
+| `BitMotion.get(elementOrSelector)` | The instance mounted on an element, or `null`. |
+| `BitMotion.destroyAll()` | Tears down everything `init` mounted. |
+
+In a SPA that means `BitMotion.init()` after render and `destroyAll()` on
+teardown.
 
 ### Picking a look
 
@@ -537,7 +615,10 @@ independent decoders.
 
 ## Verification
 
-Current as of the last change:
+`npm test` runs the headless smoke test — it builds the small DOM the engine
+actually touches and drives the mount layer through it, so the markup path,
+option precedence and teardown are covered on every change. The rest of the
+list below was measured in a browser and is current as of the last change:
 
 - **Loop closure is exact.** 0 cells differ between t=0 and t=`loopSeconds`
   across all five scenes, so an exported loop wraps with no seam and no

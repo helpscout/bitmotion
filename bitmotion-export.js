@@ -282,7 +282,12 @@
   // mode, seeded identically to the live instance so the export is the loop
   // the user is actually watching.
   function makeRenderer(opts) {
-    if (typeof BitMotion === "undefined") throw new Error("BitMotionExport: bitmotion.js must load first");
+    // A <script> tag leaves BitMotion on the global; a bundled import does
+    // not, so `options.BitMotion` is how an import hands the engine over.
+    var engine = opts.BitMotion ||
+      (typeof BitMotion !== "undefined" ? BitMotion : null) ||
+      (typeof self !== "undefined" ? self.BitMotion : null);
+    if (!engine) throw new Error("BitMotionExport: load bitmotion.js first, or pass it as the `BitMotion` option");
 
     var base = opts.options || {};
     var conf = {};
@@ -326,7 +331,7 @@
     conf.size = { w: gw * cell, h: gh * cell };
     conf.maxCell = cell;
 
-    var bm = BitMotion.create(conf);
+    var bm = engine.create(conf);
     return { bm: bm, canvas: canvas, cell: bm.cell, outW: bm.canvas.width, outH: bm.canvas.height };
   }
 

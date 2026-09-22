@@ -131,6 +131,14 @@
   </p>
 </main>
 
+<!--
+  Markup-only alternative, if you would rather not write the script at all —
+  every [data-bitmotion] element is mounted once the DOM is ready:
+
+    <canvas data-bitmotion='{"cellSize":3,"maxCells":200000,"seed":1834027461}'
+            data-bitmotion-scene="drift"></canvas>
+-->
+
 <script src="bitmotion.js"></script>
 <script>
   BitMotion.create({
