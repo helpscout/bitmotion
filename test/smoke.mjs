@@ -109,6 +109,91 @@ test("play, seek and pause drive the render loop", () => {
   assert.ok(instance.canvas.width > 0 && instance.canvas.height > 0);
 });
 
+// Drives the loop with a synthetic display clock and counts what it draws.
+function measureCadence(options, refreshHz, seconds) {
+  const el = element("canvas", {});
+  const realRaf = globalThis.requestAnimationFrame;
+  let pending = null;
+  globalThis.requestAnimationFrame = (fn) => { pending = fn; return 1; };
+  try {
+    const instance = BitMotion.create(Object.assign({ canvas: el, autoplay: false }, options));
+    let drawn = 0;
+    const render = instance._render.bind(instance);
+    instance._render = (t) => { drawn++; return render(t); };
+
+    instance.play();
+    drawn = 0; // play() paints one frame up front; count the loop only
+    const step = 1000 / refreshHz;
+    // The loop times its first frame against performance.now(), so the
+    // synthetic clock has to start from there rather than from zero.
+    let now = performance.now();
+    for (let i = 0; i < refreshHz * seconds; i++) {
+      now += step + (Math.random() - 0.5) * 0.8; // a real display is not exact
+      pending(now);
+    }
+    instance.destroy();
+    return drawn / seconds;
+  } finally {
+    globalThis.requestAnimationFrame = realRaf;
+  }
+}
+
+test("the frame cap delivers the rate it was asked for", () => {
+  // The gate used to compare against exactly 1/fps and reset its phase on
+  // every draw, so a 30fps cap came out at 24fps in an uneven 2, 3, 2, 3
+  // pattern. Both the rate and the evenness matter: the drawn frame is the
+  // expensive one, so an irregular cadence is what the rest of the page feels.
+  for (const [refresh, fps] of [[60, 30], [60, 20], [120, 30], [120, 24]]) {
+    const measured = measureCadence({ fps: fps, size: { w: 320, h: 180 }, cellSize: 8 }, refresh, 4);
+    assert.ok(
+      Math.abs(measured - fps) <= 1,
+      `${refresh}Hz at fps ${fps}: drew ${measured.toFixed(1)} frames a second`
+    );
+  }
+});
+
+test("an uncapped instance draws on every display frame", () => {
+  const measured = measureCadence({ fps: 0, size: { w: 320, h: 180 }, cellSize: 8 }, 60, 2);
+  assert.ok(measured > 59, "drew " + measured.toFixed(1) + " frames a second");
+});
+
+test("upscale css draws the grid straight into a grid-sized canvas", () => {
+  const el = element("canvas", {});
+  const instance = BitMotion.create({ canvas: el, autoplay: false, cellSize: 4, upscale: "css" });
+  assert.equal(el.width, instance.gw, "the backing store should be the grid itself");
+  assert.equal(el.height, instance.gh);
+
+  el.ctx.calls.putImageData = 0;
+  instance.seek(1);
+  assert.equal(el.ctx.calls.putImageData, 1, "the frame goes straight into the visible canvas");
+  assert.equal(el.ctx.calls.drawImage, 0, "nothing to scale up any more");
+  assert.equal(el.ctx.calls.clearRect, 0, "putImageData replaces the alpha, so no clear is needed");
+  instance.destroy();
+});
+
+test("upscale canvas keeps the full-resolution backing store", () => {
+  const el = element("canvas", {});
+  const instance = BitMotion.create({ canvas: el, autoplay: false, cellSize: 4 });
+  assert.equal(el.width, instance.gw * instance.cell);
+  assert.equal(el.height, instance.gh * instance.cell);
+
+  el.ctx.calls.drawImage = 0;
+  instance.seek(1);
+  assert.equal(el.ctx.calls.drawImage, 1, "the grid is scaled into the canvas every frame");
+  instance.destroy();
+});
+
+test("switching upscale in place resizes the canvas", () => {
+  const el = element("canvas", {});
+  const instance = BitMotion.create({ canvas: el, autoplay: false, cellSize: 4 });
+  const full = el.width;
+  instance.setOption("upscale", "css");
+  assert.equal(el.width, instance.gw);
+  instance.setOption("upscale", "canvas");
+  assert.equal(el.width, full);
+  instance.destroy();
+});
+
 test("the export module asks for an engine rather than assuming a global", () => {
   const BitMotionExport = require(path.join(root, "bitmotion-export.js"));
   for (const key of ["gif", "video", "pngSequence", "plan", "save"]) {

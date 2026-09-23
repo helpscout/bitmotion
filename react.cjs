@@ -54,7 +54,7 @@ function same(a, b) {
 // `seed` recomposes rather than being assigned, and these three are read while
 // the grid is being laid out, which `setOption` has no path to redo — cheap
 // enough to remount for, and all three are rare to animate.
-var REMOUNT = { size: true, grid: true, maxCell: true };
+var REMOUNT = { size: true, grid: true, maxCell: true, worker: true, workerUrl: true };
 
 function splitProps(props) {
   var names = getBitMotion().OPTIONS;
@@ -88,16 +88,8 @@ function applyChanges(instance, next, previous) {
     // what it should revert to, and guessing at the default would silently
     // undo a `setOption` the caller made through the instance itself.
     if (!(key in next)) continue;
-    if (key === "seed") {
-      instance.reseed(next.seed);
-    } else if (key === "fps") {
-      // The frame cap is read once when the loop starts, so it only takes
-      // effect on the next one.
-      instance.setOption("fps", next.fps);
-      if (instance.running) instance.pause().play();
-    } else {
-      instance.setOption(key, next[key]);
-    }
+    if (key === "seed") instance.reseed(next.seed);
+    else instance.setOption(key, next[key]);
   }
   return true;
 }

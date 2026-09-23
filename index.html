@@ -285,6 +285,18 @@
       <label for="cell">Block size <span class="val" id="cellV">3px</span></label>
       <input type="range" id="cell" min="2" max="28" step="1" value="3">
     </div>
+    <!-- Which of the two draws the blocks. "Compositor" makes the canvas the
+         size of the grid and lets the GPU scale it, which is 16x less to
+         upload every frame and is what keeps a live page's CSS transitions
+         smooth. Flip between them and watch the artwork: the block edges
+         should be indistinguishable. -->
+    <div class="field">
+      <label for="upscale">Upscale</label>
+      <select id="upscale">
+        <option value="canvas">Canvas — drawImage (default)</option>
+        <option value="css">Compositor — cheapest per frame</option>
+      </select>
+    </div>
     <!-- HIDDEN: Cell ceiling (maxCells). Off here, which is right for a
          design tool on a known machine. It is NOT right for a production
          page — see the note under the config snippet, and maxCells in
@@ -505,7 +517,7 @@
     refreshSnippet();
   }
 
-  ["mode", "scene", "ramp", "dither", "shape"].forEach(function (id) {
+  ["mode", "scene", "ramp", "dither", "shape", "upscale"].forEach(function (id) {
     var el = document.getElementById(id);
     if (!el) return;
     el.addEventListener("change", function () { bm.setOption(id, el.value || null); });
@@ -627,13 +639,13 @@
   // Only the options that actually differ from the engine defaults, so the
   // snippet stays readable instead of restating the whole config object.
   var SNIPPET_KEYS = ["scene", "ramp", "background", "mode", "dither", "shape",
-                      "origin", "falloff", "cellSize", "maxCells", "revolve", "inset",
-                      "morph", "blobs", "exposure", "contrast", "loopSeconds",
+                      "origin", "falloff", "cellSize", "maxCells", "upscale", "revolve",
+                      "inset", "morph", "blobs", "exposure", "contrast", "loopSeconds",
                       "fps"];
   var DEFAULTS_FOR_SNIPPET = {
     scene: "drift", ramp: "dissolve", background: "#FAF8F7", mode: "flow",
     dither: "atkinson", shape: "edges", origin: "center", falloff: 0.7, cellSize: 3,
-    maxCells: 0, revolve: 1, inset: 0.04, morph: 0.6, blobs: 5, exposure: 0,
+    maxCells: 0, upscale: "canvas", revolve: 1, inset: 0.04, morph: 0.6, blobs: 5, exposure: 0,
     contrast: 1, loopSeconds: 14, fps: 20
   };
   var snippetBox = document.getElementById("snippet");

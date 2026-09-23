@@ -292,7 +292,10 @@
     var base = opts.options || {};
     var conf = {};
     for (var k in base) {
-      if (k === "canvas" || k === "size" || k === "grid" || k === "cellSize" || k === "maxDpr") continue;
+      // `worker` too: an export renders frame by frame on this thread and
+      // reads the instance's own buffers, which a proxy does not have.
+      if (k === "canvas" || k === "size" || k === "grid" || k === "cellSize" ||
+          k === "maxDpr" || k === "worker" || k === "workerUrl") continue;
       conf[k] = base[k];
     }
 

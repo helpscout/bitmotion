@@ -54,7 +54,7 @@ to mount and `window` is never touched.
 | `bitmotion-export.js` | **No** | GIF / video / PNG-sequence encoders for the playground. Has no place on a production page — it roughly doubles the payload for something a visitor never uses. |
 | `react.cjs`, `react.mjs` | **Yes**, for React | The React wrapper, `@helpscout/bitmotion/react`. `react.cjs` is the implementation; `react.mjs` is an ESM view of it, so there is only ever one copy. Imports `react`, nothing else. |
 | `package.json`, `bitmotion.d.ts`, `bitmotion-export.d.ts`, `react.d.ts` | Packaging | npm metadata and TypeScript declarations. The `files` field is what ships: the two runtime files, their types and this README. |
-| `test/` | **No** | `npm test`. `dom.mjs` stands up the smallest DOM the engine touches; `smoke.mjs` drives the mount layer against it (attribute parsing, precedence, containers, idempotency, teardown) and `react.mjs` drives the component with a miniature React, since the repo installs nothing. Not a pixel test. |
+| `test/` | **No** | `npm test`. `dom.mjs` stands up the smallest DOM the engine touches; `smoke.mjs` drives the mount layer, the frame cap and both upscale modes against it; `react.mjs` drives the component with a miniature React; `worker.mjs` runs the generated worker script in a `node:vm` context with a worker's globals and none of a page's. The repo installs nothing, which is why React and the worker are simulated rather than real. Not a pixel test. |
 | `mask-test.html` | **No** | Scratch harness: paints the falloff mask on its own — no field, no ramp, no dither — as a 3×3 grid of the nine anchors, with live `falloff` / `inset` / `morph` / phase sliders. The silhouette and its gradient are hard to judge through the artwork, and impossible to judge through the dither; this shows the mask itself. Reach for it before touching anything in `_maskParams` or `_prepMask`. |
 
 ## Running it
@@ -175,9 +175,14 @@ preference to the bundled copy, so a page can never end up running two.
 `getBitMotion()` is exported if you need the engine imperatively.
 
 Changing a prop updates the running instance in place — `setOption` for most
-of them, `reseed` for `seed`. Only `size`, `grid` and `maxCell` rebuild the
-instance, because they are read while the grid is being laid out. A prop you
-stop passing keeps its last value: React cannot know what it should revert to.
+of them, `reseed` for `seed`. Only `size`, `grid`, `maxCell`, `worker` and
+`workerUrl` rebuild the instance: the first three are read while the grid is
+being laid out, and the last two decide which thread it is laid out on. A prop
+you stop passing keeps its last value: React cannot know what it should revert
+to.
+
+`worker` is a prop like any other, so a component that shares a page with
+animated UI is `<BitMotionCanvas worker fps={30} … />`.
 
 Two props are the component's own:
 
@@ -270,13 +275,88 @@ comes out a pixel or two short — 1280 wide at 6px blocks is 1278. The plan
 reports the true dimensions, and the reserved margin means nothing is lost.
 1920×1080 divides evenly at 2, 3, 4, 5, 6, 8, 10 and 12px.
 
+### Sharing a page with CSS transitions
+
+A hero that is fine on its own can still be what makes a menu, an accordion or
+a hover state elsewhere on the page feel rough. Three things cause that, and
+each has a lever.
+
+**1. The frame cap has to be a real cadence.** The loop draws on the display's
+frames, so a cap is only met if it divides the refresh rate. Until recently the
+gate compared against exactly `1/fps` and reset its phase on every draw, which
+rounded every interval up to the next whole frame:
+
+| Display | Asked for | Delivered | Gap between draws |
+| --- | --- | --- | --- |
+| 60Hz | 30fps | 24.1fps | alternating 2 and 3 frames |
+| 60Hz | 20fps | 17.1fps | alternating 3 and 4 |
+| 120Hz | 30fps | 26.7fps | alternating 4 and 5 |
+
+It now carries the remainder and allows half a display frame of slack, so 30fps
+is 30.0fps on a constant two-frame cadence at 60Hz and a four-frame one at
+120Hz. That evenness is worth as much as the rate: every drawn frame is the
+expensive one, so an irregular cadence is what the rest of the page feels.
+`fps: 30` is the setting to use next to anything animated; the default stays at
+20, which is enough for the artwork on its own.
+
+**2. Each drawn frame re-uploads the whole canvas.** In the default `upscale:
+"canvas"` mode the backing store is the finished artwork — a 1200×460 hero at
+2× DPI is 2400×920, 2.2M pixels, ~8.8MB re-rastered and re-uploaded *per
+frame*, ~265MB/s at 30fps. None of that shows up in a JS profile.
+
+`upscale: "css"` makes the backing store the grid itself (600×230 for that
+hero, **16× less**) and lets the compositor scale it on the GPU, which is free.
+`image-rendering: pixelated` keeps the edges hard. The trade is that the scale
+factor is then whatever the element's box divides by: where it is not a whole
+number, some blocks land a device pixel wider than their neighbours. That is
+bounded by half a block, so at most `cell / 2` of the `gw` columns are affected
+— under 0.5% in every viewport measured, and the same order as the stretch the
+compositor already applies in `"canvas"` mode. The playground has an **Upscale**
+toggle; flip it and look before shipping it.
+
+**3. The render is still on the main thread.** Even at 3ms a frame it runs
+inside the rAF callback, *before* style, layout and paint, so it delays the very
+frame it shares. `worker: true` moves the whole pipeline into a worker via
+OffscreenCanvas:
+
+```js
+BitMotion.create({ canvas: "#hero", worker: true, fps: 30, maxCells: 200000 });
+```
+
+The page keeps the element — its box, its visibility, its teardown — and posts
+what it sees; the worker owns the pixels. Main-thread cost per frame goes to
+zero, so no setting of `maxCells` or `cellSize` can make the artwork the reason
+a transition stutters. `create()` returns a handle with the same control
+surface (`play`, `pause`, `seek`, `setOption`, `reseed`, `setSize`, `destroy`)
+and `usesWorker: true`.
+
+It falls back to rendering on the page — silently, and before anything is
+transferred — where the pieces are missing: no `Worker`, no `OffscreenCanvas`
+(Safari before 16.4), or a Content-Security-Policy that refuses `blob:`
+workers. For that last case, host two lines:
+
+```js
+// /assets/bitmotion-worker.js
+importScripts("/assets/bitmotion.js");
+BitMotion.startWorker();
+```
+
+and pass `workerUrl: "/assets/bitmotion-worker.js"`. No blob, no `eval`.
+
+**And on the CSS side**, whatever the canvas is doing: transitions on
+`transform` and `opacity` run on the compositor and survive a busy main thread,
+while `width`, `top`, `color` and `box-shadow` do not. If a neighbour has to
+animate one of those, `worker: true` is the fix rather than a workaround.
+
 ### Already handled
 
 - Pauses rendering entirely when the canvas scrolls out of view
   (IntersectionObserver).
 - Renders one static frame and stops under `prefers-reduced-motion`.
 - Browsers throttle `requestAnimationFrame` to zero in background tabs, so
-  there is no hidden-tab cost.
+  there is no hidden-tab cost. In `worker: true` mode the loop runs on a timer
+  instead, so the page posts the tab's visibility across and the worker stops
+  with it.
 
 ### Video quality
 
@@ -328,6 +408,15 @@ not a flag. Not implemented here.
 | `resolution` | `96` | Alternative sizing, consulted only when `cellSize` is `0`. Fixes the cell *count* instead, so the composition looks identical at every breakpoint while blocks grow on larger screens. Not exposed in the playground; still worth knowing for a responsive hero. |
 | `maxCells` | `0` (off) | Hard ceiling on total cells; grows blocks to fit. **Set this in production.** |
 | `maxDpr` | `2` | Device-pixel-ratio ceiling. `1` quarters the cell count at some crispness cost. |
+
+### Cost
+
+| Option | Default | Notes |
+| --- | --- | --- |
+| `fps` | `20` | Frame cap. Met exactly when it divides the display's refresh rate — 20 and 30 both do on 60Hz. Use `30` next to anything animated. |
+| `upscale` | `"canvas"` | `"css"` makes the backing store the grid and lets the compositor scale it: ~16× less to upload per frame, at the cost of the odd block landing a device pixel wider. See [Sharing a page with CSS transitions](#sharing-a-page-with-css-transitions). |
+| `worker` | `false` | `true` renders in a worker through OffscreenCanvas, taking the main-thread cost to zero. Falls back to the page where that is unavailable. |
+| `workerUrl` | `null` | A worker file to use instead of the built-in blob, for pages whose CSP refuses `blob:` workers. |
 
 ### Look
 
@@ -655,6 +744,24 @@ the markup path, option precedence, prop updates and teardown are covered on
 every change. The rest of the
 list below was measured in a browser and is current as of the last change:
 
+- **The frame cap delivers its rate.** Replaying the loop's own gate against a
+  jittery display: 30fps requested came out at 24.1fps on 60Hz and 26.7fps on
+  120Hz, in gaps alternating 2/3 and 4/5 frames. With the remainder carried and
+  half a frame of slack it is 30.0fps on both, at a constant 2 and 4 frames.
+  `npm test` asserts the delivered rate is within 1fps of the cap at 20 and 30
+  on 60Hz and 120Hz, and fails against the old gate.
+- **`upscale: "css"` uploads 16× less.** A 1200×460 hero at 2× DPI: 2400×920 =
+  2.2M pixels a frame in `"canvas"` mode against 600×230 = 0.14M in `"css"`.
+  Block evenness is bounded by `cell / 2` columns of `gw` — 0 of 600 at
+  1200×460, 0 of 683 at 1366×400, 2 of 619 at the deliberately awkward
+  1237×433.
+- **The worker script is the engine.** The generated worker source is executed
+  in `npm test` inside a context with a worker's globals and none of a page's:
+  it boots, derives the same 150×75 grid from a posted box that the page would
+  have measured, paints the transferred canvas, resizes, and closes on destroy.
+- **Per-frame allocation is zero.** Every buffer is built in `_resize`; the
+  render path allocates nothing, so there is no GC sawtooth to explain a
+  neighbouring animation stuttering.
 - **Loop closure is exact.** 0 cells differ between t=0 and t=`loopSeconds`
   across all five scenes, so an exported loop wraps with no seam and no
   duplicated frame.

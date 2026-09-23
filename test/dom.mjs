@@ -3,15 +3,20 @@
  * and the handful of window globals it reads. Shared by the tests so they
  * drive the real code rather than a mock of it.
  */
-const ctx = {
-  fillStyle: "",
-  imageSmoothingEnabled: true,
-  clearRect() {},
-  fillRect() {},
-  drawImage() {},
-  putImageData() {},
-  createImageData: (w, h) => ({ width: w, height: h, data: new Uint8ClampedArray(w * h * 4) })
-};
+// One context per canvas, counting the calls the tests care about — the
+// engine draws into two canvases and which one it reaches for is the point.
+function makeContext() {
+  return {
+    fillStyle: "",
+    imageSmoothingEnabled: true,
+    calls: { clearRect: 0, fillRect: 0, drawImage: 0, putImageData: 0 },
+    clearRect() { this.calls.clearRect++; },
+    fillRect() { this.calls.fillRect++; },
+    drawImage() { this.calls.drawImage++; },
+    putImageData() { this.calls.putImageData++; },
+    createImageData: (w, h) => ({ width: w, height: h, data: new Uint8ClampedArray(w * h * 4) })
+  };
+}
 
 export class FakeElement {
   constructor(tagName, attrs = {}) {
@@ -21,6 +26,7 @@ export class FakeElement {
     this.style = {};
     this.children = [];
     this.ownerDocument = null;
+    this.ctx = makeContext();
   }
   get attributes() {
     return [...this._attrs].map(([name, value]) => ({ name, value }));
@@ -30,7 +36,7 @@ export class FakeElement {
   hasAttribute(n) { return this._attrs.has(n); }
   appendChild(child) { child.ownerDocument = this.ownerDocument; this.children.push(child); return child; }
   getBoundingClientRect() { return { width: 320, height: 180 }; }
-  getContext() { return ctx; }
+  getContext() { return this.ctx; }
 }
 
 /** Elements the fake `querySelectorAll` can find. */

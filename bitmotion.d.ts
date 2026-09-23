@@ -35,6 +35,13 @@ declare namespace BitMotion {
     maxCell?: number;
     /** Block size in output pixels — the primary sizing control. 0 sizes by `resolution` instead. */
     cellSize?: number;
+    /**
+     * How the grid becomes blocks. "canvas" renders the finished artwork into
+     * the backing store and scales the grid up with drawImage; "css" makes
+     * the backing store the grid and leaves the scaling to the compositor,
+     * which uploads far less per frame.
+     */
+    upscale?: "canvas" | "css";
     /** Device-pixel-ratio ceiling. 1 quarters the cell count. */
     maxDpr?: number;
     /** Hard ceiling on grid cells; blocks coarsen to fit. Keep this set in production. */
@@ -78,6 +85,17 @@ declare namespace BitMotion {
     inset?: number;
     /** Integer for a reproducible composition. */
     seed?: number | null;
+    /**
+     * Render in a worker, off the main thread, via OffscreenCanvas. Falls
+     * back to rendering on the page where that is unavailable.
+     */
+    worker?: boolean;
+    /**
+     * A worker script to use instead of the built-in blob — for pages whose
+     * Content-Security-Policy refuses `blob:` workers. The file needs two
+     * lines: `importScripts(".../bitmotion.js")` then `BitMotion.startWorker()`.
+     */
+    workerUrl?: string | null;
     autoplay?: boolean;
     /** Hold a single static frame under prefers-reduced-motion. */
     respectReducedMotion?: boolean;
@@ -93,6 +111,8 @@ declare namespace BitMotion {
     /** The seed driving this composition, whether given or generated. */
     readonly rndSeed: number;
     readonly running: boolean;
+    /** True when this instance is a handle on one rendering in a worker. */
+    readonly usesWorker?: boolean;
     /** Seconds of animation played so far. */
     readonly elapsed: number;
 
@@ -100,6 +120,8 @@ declare namespace BitMotion {
     pause(): Instance;
     /** Jump to a time in seconds and render that frame. */
     seek(seconds: number): Instance;
+    /** Resize to a box given in device pixels, instead of measuring the element. */
+    setSize(width: number, height: number): Instance;
     setRamp(ramp: RampName | RampStops): Instance;
     /** Change one option in place, rebuilding only what it affects. */
     setOption<K extends keyof Options>(key: K, value: Options[K]): Instance;
@@ -128,6 +150,12 @@ declare namespace BitMotion {
 
     /** Destroy every instance `init` mounted. */
     destroyAll(): void;
+
+    /**
+     * Called by a worker script, never by a page:
+     * `importScripts(".../bitmotion.js"); BitMotion.startWorker();`
+     */
+    startWorker(): void;
 
     /** Every option name, in declaration order. */
     readonly OPTIONS: Array<keyof Options>;
