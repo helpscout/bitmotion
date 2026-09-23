@@ -11,7 +11,7 @@
     "background",
     "helpscout"
   ],
-  "license": "MIT",
+  "license": "UNLICENSED",
   "author": "Help Scout",
   "homepage": "https://github.com/helpscout/bitmotion#readme",
   "repository": {
@@ -38,7 +38,6 @@
     "./package.json": "./package.json"
   },
   "files": [
-    "LICENSE",
     "bitmotion.js",
     "bitmotion.d.ts",
     "bitmotion-export.js",
@@ -49,6 +48,6 @@
     "test": "node test/smoke.mjs"
   },
   "publishConfig": {
-    "access": "public"
+    "access": "restricted"
   }
 }

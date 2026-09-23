@@ -21,7 +21,8 @@ the whole workflow. Then read Performance before putting it on a real page.
 npm install @helpscout/bitmotion
 ```
 
-Published publicly under MIT — no npm auth, no private registry.
+The scope is internal, so npm has to be authenticated against `@helpscout` the
+same way it is for our other private packages.
 
 ```js
 import BitMotion from "@helpscout/bitmotion";      // bundler or Node ESM
@@ -35,15 +36,6 @@ what the examples in this repo do:
 ```html
 <script src="node_modules/@helpscout/bitmotion/bitmotion.js"></script>
 ```
-
-or straight off a CDN, with no install at all:
-
-```html
-<script src="https://cdn.jsdelivr.net/npm/@helpscout/bitmotion"></script>
-```
-
-Pin the version (`@helpscout/bitmotion@1.0.0`) on anything you ship — an
-unpinned CDN URL moves under you on the next release.
 
 TypeScript declarations ship with it. The GIF / video / PNG tooling is a
 separate entry point, `@helpscout/bitmotion/export`, and belongs in tooling
@@ -60,7 +52,7 @@ to mount and `window` is never touched.
 | `embed-example.html` | Reference | A complete working hero, configured the way it should ship. Copy the pattern, not the file. |
 | `index.html` | **No** | Playground for choosing a look and exporting previews. Internal tool. The Field, Quantiser and Cell-ceiling controls are commented out in the markup rather than deleted — the JS checks for each element before binding, so putting one back is a markup-only edit. |
 | `bitmotion-export.js` | **No** | GIF / video / PNG-sequence encoders for the playground. Has no place on a production page — it roughly doubles the payload for something a visitor never uses. |
-| `package.json`, `LICENSE`, `bitmotion.d.ts`, `bitmotion-export.d.ts` | Packaging | npm metadata and TypeScript declarations. The `files` field is what ships: the two runtime files, their types and this README. |
+| `package.json`, `bitmotion.d.ts`, `bitmotion-export.d.ts` | Packaging | npm metadata and TypeScript declarations. The `files` field is what ships: the two runtime files, their types and this README. |
 | `test/smoke.mjs` | **No** | `npm test`. Stands up the smallest DOM the engine touches and drives the mount layer against it — attribute parsing, precedence, containers, idempotency, teardown. Not a pixel test. |
 | `mask-test.html` | **No** | Scratch harness: paints the falloff mask on its own — no field, no ramp, no dither — as a 3×3 grid of the nine anchors, with live `falloff` / `inset` / `morph` / phase sliders. The silhouette and its gradient are hard to judge through the artwork, and impossible to judge through the dither; this shows the mask itself. Reach for it before touching anything in `_maskParams` or `_prepMask`. |
 
