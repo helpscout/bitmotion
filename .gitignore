@@ -5,3 +5,7 @@
 # Editor/OS cruft
 Thumbs.db
 *.swp
+
+# npm
+node_modules/
+*.tgz

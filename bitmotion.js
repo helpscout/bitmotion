@@ -11,6 +11,12 @@
  *
  *   BitMotion.create({ canvas: "#hero", cellSize: 4, maxCells: 200000 });
  *
+ * Or let the markup do it — every [data-bitmotion] element is mounted once
+ * the DOM is ready, and init() picks up anything added after that:
+ *
+ *   <canvas data-bitmotion data-bitmotion-scene="waves"></canvas>
+ *   BitMotion.init();
+ *
  * Palette entries equal to `background` render fully transparent, so the
  * animation dissolves seamlessly into whatever the page sits on.
  *
@@ -26,10 +32,16 @@
 (function (root, factory) {
   if (typeof module === "object" && module.exports) module.exports = factory();
   else root.BitMotion = factory();
-})(typeof self !== "undefined" ? self : this, function () {
+})(typeof self !== "undefined" ? self : this, function bitmotionFactory() {
   "use strict";
 
   var TAU = Math.PI * 2;
+
+  // The engine runs in two places: a page, and a worker holding an
+  // OffscreenCanvas. A worker has no window, no document and no
+  // requestAnimationFrame, so everything that reaches for one is guarded on
+  // this rather than assumed.
+  var HAS_DOM = typeof window !== "undefined" && typeof document !== "undefined";
 
   // Help Scout palette (matches Bitmaker's ALL_COLORS).
   var HS = {
@@ -481,6 +493,10 @@
     cellSize: 3,           // exact block size in OUTPUT pixels; the primary
                            // sizing control. Set it to 0 to size by
                            // `resolution` instead.
+    upscale: "canvas",     // "canvas" sizes the backing store to the finished
+                           // artwork and scales the grid up with drawImage;
+                           // "css" sizes it to the grid itself and lets the
+                           // compositor do the scaling. See _resize.
     maxDpr: 2,             // device-pixel-ratio ceiling; 1 quarters the cell count
     maxCells: 0,           // hard ceiling on grid cells; coarsens blocks to fit
     resolution: 96,        // cells along the long edge — only consulted when
@@ -524,6 +540,10 @@
                            // being clipped by it. This is what keeps an
                            // exported frame from touching its own edges.
     seed: null,            // integer for a reproducible sequence
+    worker: false,         // true renders in a worker, off the main thread
+    workerUrl: null,       // a worker file to use instead of the built-in
+                           // blob — the escape hatch for a strict CSP. See
+                           // the worker section at the bottom of this file.
     autoplay: true,
     respectReducedMotion: true
   };
@@ -538,10 +558,15 @@
     return out;
   })();
 
+  function mergeOptions(opts) {
+    var o = {}, k, j;
+    for (k in DEFAULTS) o[k] = DEFAULTS[k];
+    for (j in opts) if (opts[j] !== undefined) o[j] = opts[j];
+    return o;
+  }
+
   function BitMotionInstance(opts) {
-    var o = {};
-    for (var k in DEFAULTS) o[k] = DEFAULTS[k];
-    for (var j in opts) if (opts[j] !== undefined) o[j] = opts[j];
+    var o = mergeOptions(opts);
     this.o = o;
 
     this.canvas = typeof o.canvas === "string" ? document.querySelector(o.canvas) : o.canvas;
@@ -551,10 +576,11 @@
     // If the backing store and the CSS box ever disagree — a maxDpr below the
     // display's, an odd container width — the compositor upscales with
     // bilinear filtering and softens every block edge. This keeps them hard.
-    this.canvas.style.imageRendering = "pixelated";
+    // An OffscreenCanvas has no style; the element it came from carries it.
+    if (this.canvas.style) this.canvas.style.imageRendering = "pixelated";
 
     // Grid canvas: one device pixel per cell. Scaled up on draw.
-    this.grid = document.createElement("canvas");
+    this.grid = HAS_DOM ? document.createElement("canvas") : new OffscreenCanvas(1, 1);
     this.gctx = this.grid.getContext("2d", { alpha: true });
 
     this.rndSeed = o.seed == null ? (Math.random() * 0x7fffffff) | 0 : o.seed | 0;
@@ -572,19 +598,24 @@
 
     var self = this;
     this._onResize = function () { self._resize(); if (!self.running) self._render(self.elapsed); };
-    window.addEventListener("resize", this._onResize);
 
-    if (typeof IntersectionObserver === "function") {
-      this._io = new IntersectionObserver(function (entries) {
-        self.visible = entries[0].isIntersecting;
-        if (self.visible && self.running) self._loop();
-      }, { threshold: 0 });
-      this._io.observe(this.canvas);
+    // In a worker none of this exists: the page side owns the element, so it
+    // watches the box, the tab and the observer and posts the results in.
+    if (HAS_DOM) {
+      window.addEventListener("resize", this._onResize);
+
+      if (typeof IntersectionObserver === "function") {
+        this._io = new IntersectionObserver(function (entries) {
+          self.visible = entries[0].isIntersecting;
+          if (self.visible && self.running) self._loop();
+        }, { threshold: 0 });
+        this._io.observe(this.canvas);
+      }
+      this._onVis = function () { if (!document.hidden && self.running) self._loop(); };
+      document.addEventListener("visibilitychange", this._onVis);
     }
-    this._onVis = function () { if (!document.hidden && self.running) self._loop(); };
-    document.addEventListener("visibilitychange", this._onVis);
 
-    var reduced = o.respectReducedMotion &&
+    var reduced = o.respectReducedMotion && HAS_DOM &&
       window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
     if (reduced) this._render(o.loopSeconds * 0.25);
@@ -636,7 +667,7 @@
     }
     this.o[key] = value;
     if (key === "resolution" || key === "cellSize" || key === "maxDpr" ||
-        key === "maxCells") this._resize();
+        key === "maxCells" || key === "upscale") this._resize();
     if (key === "morph") this._maskParams();
     if (key === "shape") this._resize(); // radial needs its per-cell tables
     // The anchor is baked into the radial tables, and it moves the field the
@@ -821,11 +852,17 @@
       cssW = Math.max(1, this.o.size.w);
       cssH = Math.max(1, this.o.size.h);
       dpr = 1;
-    } else {
+    } else if (this.canvas.getBoundingClientRect) {
       dpr = Math.min(window.devicePixelRatio || 1, Math.max(1, this.o.maxDpr));
       var rect = this.canvas.getBoundingClientRect();
       cssW = Math.max(1, rect.width || this.canvas.clientWidth || 640);
       cssH = Math.max(1, rect.height || this.canvas.clientHeight || 360);
+    } else {
+      // An OffscreenCanvas cannot be measured — whoever transferred it sends
+      // the box instead, already in device pixels, and `setSize` records it.
+      dpr = 1;
+      cssW = Math.max(1, this.canvas.width || 640);
+      cssH = Math.max(1, this.canvas.height || 360);
     }
 
     var gw, gh, cell;
@@ -875,8 +912,31 @@
     }
     this.gw = gw; this.gh = gh; this.cell = cell;
     this.grid.width = gw; this.grid.height = gh;
-    this.canvas.width = gw * cell;
-    this.canvas.height = gh * cell;
+
+    // Two ways to get from a grid of cells to a canvas full of blocks.
+    //
+    // "canvas" makes the backing store the finished artwork — one device
+    // pixel per output pixel — and scales the grid into it with drawImage
+    // every frame. Every block is then exactly `cell` device pixels wide,
+    // which is what keeps the grid reading as crisp rather than jittery.
+    // The cost is that the browser re-rasters and re-uploads that whole
+    // surface on every drawn frame: a 2400x920 hero is 2.2M pixels, ~8.8MB a
+    // frame, and at 30fps that traffic is enough to take the smoothness out
+    // of anything else on the page that is animating.
+    //
+    // "css" makes the backing store the grid — 600x230 for that same hero,
+    // 16x less to upload — and leaves the scaling to the compositor, which
+    // does it on the GPU for nothing. `image-rendering: pixelated` keeps the
+    // edges hard. The trade is that the scale factor is then whatever the
+    // element's box divides by, so where it is not a whole number some
+    // blocks land a device pixel wider than their neighbours.
+    if (this.o.upscale === "css") {
+      this.canvas.width = gw;
+      this.canvas.height = gh;
+    } else {
+      this.canvas.width = gw * cell;
+      this.canvas.height = gh * cell;
+    }
     this.ctx.imageSmoothingEnabled = false;
 
     this.imgData = this.gctx.createImageData(gw, gh);
@@ -1461,6 +1521,15 @@
     }
 
     // --- 4. blit and scale up with hard pixel edges ----------------------
+    // Every pixel above was written opaque unless it is the background and
+    // the background is meant to be transparent, so the image is already
+    // complete: "css" mode needs no clear and no fill underneath it, and
+    // putImageData replaces the alpha channel rather than compositing onto
+    // what was there.
+    if (o.upscale === "css") {
+      this.ctx.putImageData(this.imgData, 0, 0);
+      return;
+    }
     this.gctx.putImageData(this.imgData, 0, 0);
     this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     if (!transparent) {
@@ -1610,10 +1679,22 @@
 
   /* ----------------------------------------------------------- transport */
 
+  // A page has a display to sync with; a worker has neither a display nor
+  // requestAnimationFrame, so there the frame cap IS the clock.
+  BitMotionInstance.prototype._schedule = function (fn) {
+    if (typeof requestAnimationFrame === "function") return requestAnimationFrame(fn);
+    var interval = this.o.fps > 0 ? 1000 / this.o.fps : 16;
+    return setTimeout(function () { fn(performance.now()); }, interval);
+  };
+
+  BitMotionInstance.prototype._unschedule = function (id) {
+    if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(id);
+    else clearTimeout(id);
+  };
+
   BitMotionInstance.prototype._loop = function () {
     if (this._raf) return;
     var self = this;
-    var minDelta = self.o.fps > 0 ? 1 / self.o.fps : 0;
     var last = performance.now();
 
     function frame(now) {
@@ -1627,13 +1708,28 @@
       last = now;
       self.elapsed += dt;
 
-      if (self.elapsed - self.lastDraw >= minDelta) {
-        self.lastDraw = self.elapsed;
+      // The cap is a cadence, not a deadline, and the display only offers
+      // frames at its own refresh. Comparing against exactly 1/fps asks two
+      // 60Hz frames (33.34ms) to clear a 33.33ms bar, which rounding loses
+      // about half the time; the draw then slips to the third frame, and
+      // because `lastDraw` used to be reset to the current time rather than
+      // advanced by the interval, the lost remainder was thrown away instead
+      // of carried. A 30fps cap delivered 24fps in gaps alternating 2, 3, 2,
+      // 3 — the jitter visible both in the artwork and, since every drawn
+      // frame is the expensive one, in whatever else the page is animating.
+      // Half a display frame of slack lets the intended frame through, and
+      // carrying the remainder keeps the cadence from drifting.
+      var minDelta = self.o.fps > 0 ? 1 / self.o.fps : 0;
+      if (self.elapsed - self.lastDraw >= minDelta - dt * 0.5) {
+        self.lastDraw = minDelta > 0 ? self.lastDraw + minDelta : self.elapsed;
+        // A throttled tab or one very long frame must not leave the loop
+        // owing a debt of frames it would then try to pay back all at once.
+        if (self.elapsed - self.lastDraw > minDelta) self.lastDraw = self.elapsed;
         self._render(self.elapsed);
       }
-      self._raf = requestAnimationFrame(frame);
+      self._raf = self._schedule(frame);
     }
-    self._raf = requestAnimationFrame(frame);
+    self._raf = self._schedule(frame);
   };
 
   BitMotionInstance.prototype.play = function () {
@@ -1653,7 +1749,16 @@
 
   BitMotionInstance.prototype.pause = function () {
     this.running = false;
-    if (this._raf) { cancelAnimationFrame(this._raf); this._raf = null; }
+    if (this._raf) { this._unschedule(this._raf); this._raf = null; }
+    return this;
+  };
+
+  // The box, in device pixels. A page-side instance measures its own element;
+  // one in a worker cannot, so whoever owns the element tells it.
+  BitMotionInstance.prototype.setSize = function (w, h) {
+    this.o.size = { w: Math.max(1, Math.round(w)), h: Math.max(1, Math.round(h)) };
+    this._resize();
+    if (!this.running) this._render(this.elapsed);
     return this;
   };
 
@@ -1665,21 +1770,415 @@
 
   BitMotionInstance.prototype.destroy = function () {
     this.pause();
-    window.removeEventListener("resize", this._onResize);
-    document.removeEventListener("visibilitychange", this._onVis);
+    if (HAS_DOM) {
+      window.removeEventListener("resize", this._onResize);
+      document.removeEventListener("visibilitychange", this._onVis);
+    }
     if (this._io) this._io.disconnect();
+    unmount(this); // drops the element registration `init` made, if any
     return this;
   };
 
+  /* ----------------------------------------------------------------- mount */
+
+  // Page-level entry point. `<canvas data-bitmotion></canvas>` is enough to
+  // get an animation with no script of your own: the mount pass below runs
+  // once the DOM is ready and again whenever you call `init()`.
+  //
+  // Options come from two places, and the later one wins:
+  //   data-bitmotion='{"scene":"waves","cellSize":4}'   JSON, all at once
+  //   data-bitmotion-scene="waves" data-bitmotion-cell-size="4"
+  // The attribute form exists because CMS fields and template engines make
+  // quoting a JSON blob miserable; the two mix freely on one element.
+  //
+  // `data-bitmotion` on something other than a canvas fills that element with
+  // one, so a container you have already sized in CSS needs no extra markup.
+
+  var mounted = []; // [{ el, instance }] — a page has a handful of these at most
+
+  function mountedFor(el) {
+    for (var i = 0; i < mounted.length; i++) if (mounted[i].el === el) return mounted[i].instance;
+    return null;
+  }
+
+  // Called from `destroy` so a torn-down element can be mounted again later.
+  function unmount(instance) {
+    for (var i = 0; i < mounted.length; i++) {
+      if (mounted[i].instance === instance) { mounted.splice(i, 1); return; }
+    }
+  }
+
+  function warn(msg, detail) {
+    if (typeof console !== "undefined" && console.warn) console.warn("BitMotion: " + msg, detail);
+  }
+
+  // Attribute values arrive as strings. Numbers and booleans are the common
+  // case; anything that parses as JSON (an array of ramp stops, an {x, y}
+  // origin) is taken as written, and everything else stays a string.
+  function parseValue(raw) {
+    var s = String(raw).trim();
+    if (s === "") return true; // bare attribute reads as a flag
+    if (s === "true") return true;
+    if (s === "false") return false;
+    if (s === "null") return null;
+    if (/^-?\d+(\.\d+)?$/.test(s)) return parseFloat(s);
+    if (s.charAt(0) === "{" || s.charAt(0) === "[") {
+      try { return JSON.parse(s); } catch (err) { return s; }
+    }
+    return s;
+  }
+
+  function camelCase(s) {
+    return s.replace(/-([a-z])/g, function (_, c) { return c.toUpperCase(); });
+  }
+
+  function readOptions(el) {
+    var opts = {}, k;
+    var json = (el.getAttribute("data-bitmotion") || "").trim();
+    if (json) {
+      try {
+        var parsed = JSON.parse(json);
+        if (parsed && typeof parsed === "object") for (k in parsed) opts[k] = parsed[k];
+      } catch (err) {
+        // A malformed blob is a typo in a template, not a reason to leave the
+        // page blank: fall back to the defaults and say so once.
+        warn("could not parse the data-bitmotion JSON on", el);
+      }
+    }
+    var attrs = el.attributes;
+    for (var i = 0; i < attrs.length; i++) {
+      var name = attrs[i].name;
+      if (name.indexOf("data-bitmotion-") !== 0) continue;
+      k = camelCase(name.slice(15));
+      if (k) opts[k] = parseValue(attrs[i].value);
+    }
+    delete opts.canvas; // the element decides this, not the markup
+    return opts;
+  }
+
+  // The canvas to draw into: the element itself when it is one, otherwise a
+  // child that fills it. The child is tagged so a second mount reuses it
+  // rather than stacking canvases.
+  function canvasFor(el) {
+    if (String(el.tagName).toLowerCase() === "canvas") return el;
+    for (var i = 0; i < el.children.length; i++) {
+      if (el.children[i].hasAttribute("data-bitmotion-canvas")) return el.children[i];
+    }
+    var c = (el.ownerDocument || document).createElement("canvas");
+    c.setAttribute("data-bitmotion-canvas", "");
+    c.style.display = "block";
+    c.style.width = "100%";
+    c.style.height = "100%";
+    el.appendChild(c);
+    return c;
+  }
+
+  function toElements(target) {
+    if (typeof document === "undefined") return [];
+    if (target == null) target = "[data-bitmotion]";
+    if (typeof target === "string") return [].slice.call(document.querySelectorAll(target));
+    if (target.nodeType === 1) return [target];
+    if (typeof target.length === "number") return [].slice.call(target);
+    return [];
+  }
+
+  // init()                       -> every [data-bitmotion] element on the page
+  // init(".hero")                -> a selector, element, NodeList or array
+  // init(".hero", { seed: 12 })  -> same, with options that beat the markup
+  //
+  // Idempotent: an element that is already running is left alone and its
+  // existing instance returned, so it is safe to call after injecting markup.
+  function init(target, overrides) {
+    var els = toElements(target), out = [];
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      var existing = mountedFor(el);
+      if (existing) { out.push(existing); continue; }
+
+      var opts = readOptions(el), k;
+      if (overrides) for (k in overrides) if (overrides[k] !== undefined) opts[k] = overrides[k];
+      opts.canvas = canvasFor(el);
+
+      var instance;
+      try {
+        instance = createInstance(opts);
+      } catch (err) {
+        // One bad element must not take the rest of the page down with it.
+        warn("could not start on an element: " + (err && err.message), el);
+        continue;
+      }
+      mounted.push({ el: el, instance: instance });
+      out.push(instance);
+    }
+    return out;
+  }
+
+  // Mount whatever is already in the markup. Inert on a page with no
+  // `data-bitmotion` attribute, and skipped entirely where there is no DOM at
+  // all, so importing this during server-side rendering does nothing.
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", function () { init(); });
+    } else {
+      init();
+    }
+  }
+
+  /* --------------------------------------------------------------- worker */
+
+  // The offscreen path: the same engine, running in a worker, drawing into a
+  // canvas the page transferred to it. The page keeps the element — its box,
+  // its visibility, its teardown — and posts what it sees; the worker owns the
+  // pixels. A frame then costs the main thread nothing at all, which is the
+  // only way to guarantee the artwork is not what makes a CSS transition
+  // elsewhere on the page stutter.
+  //
+  //   BitMotion.create({ canvas: "#hero", worker: true });
+  //
+  // It falls back to rendering on the page, silently and before anything is
+  // transferred, wherever the pieces are missing: no Worker, no
+  // OffscreenCanvas (Safari before 16.4), or a Content-Security-Policy that
+  // refuses a blob: worker. For that last case, host a two-line file
+  //
+  //   importScripts("/assets/bitmotion.js");
+  //   BitMotion.startWorker();
+  //
+  // and pass its URL as `workerUrl`, which needs no blob and no eval.
+
+  // Runs INSIDE the worker. It lives here as a function, rather than as a
+  // string, so it is ordinary readable code that the linter and the tests see;
+  // `workerSource` is what turns it into a script.
+  function workerBoot(api) {
+    var instance = null;
+
+    self.onmessage = function (event) {
+      var msg = event.data;
+      try {
+        if (msg.type === "init") {
+          var opts = msg.options || {};
+          opts.canvas = msg.canvas;
+          // An OffscreenCanvas cannot be measured, so the box arrives with it,
+          // already in device pixels — which is also why `size` is what the
+          // worker sizes from for the rest of its life.
+          opts.size = msg.size;
+          opts.worker = false;
+          instance = api.create(opts);
+          self.postMessage({
+            type: "ready",
+            gw: instance.gw, gh: instance.gh, cell: instance.cell, seed: instance.rndSeed
+          });
+          return;
+        }
+        if (!instance) return;
+
+        if (msg.type === "size") {
+          instance.setSize(msg.size.w, msg.size.h);
+        } else if (msg.type === "visible") {
+          // Same contract as the IntersectionObserver on the page: off screen
+          // or a hidden tab stops the loop, and it picks up where it left off.
+          instance.visible = msg.visible;
+          if (msg.visible && instance.running) instance._loop();
+        } else if (msg.type === "call") {
+          instance[msg.method].apply(instance, msg.args || []);
+          if (msg.method === "destroy") { instance = null; self.close(); }
+        }
+      } catch (err) {
+        self.postMessage({ type: "error", message: String((err && err.message) || err) });
+      }
+    };
+  }
+
+  // The worker script: this very factory, re-evaluated inside the worker, plus
+  // the boot above. Building it from the function's own source is what keeps
+  // the package a single file — there is no second copy of the engine to ship
+  // and nothing to keep in step.
+  function workerSource() {
+    return "self.BitMotion = (" + bitmotionFactory.toString() + ")();\n" +
+           "self.BitMotion.startWorker();\n";
+  }
+
+  var workerUrlCache = null;
+
+  function workerBlobUrl() {
+    if (!workerUrlCache) {
+      workerUrlCache = URL.createObjectURL(
+        new Blob([workerSource()], { type: "text/javascript" })
+      );
+    }
+    return workerUrlCache;
+  }
+
+  // Every way in goes through here, so `worker: true` works the same whether
+  // it came from create(), from a data attribute or from a React prop.
+  function createInstance(opts) {
+    if (opts && opts.worker) {
+      // Falls back to the page when the worker cannot be had — and does it
+      // before the canvas is transferred, so the fallback is a real one.
+      var proxy = createWorkerInstance(opts);
+      if (proxy) return proxy;
+    }
+    return new BitMotionInstance(opts);
+  }
+
+  // The page-side half: an object with the instance's control surface that
+  // posts each call across. Returns null when anything is missing, before the
+  // canvas has been transferred — after the transfer there is no way back, so
+  // every check that can be made early is made early.
+  function createWorkerInstance(opts) {
+    if (!HAS_DOM || typeof Worker !== "function" || typeof URL === "undefined") return null;
+
+    var canvas = typeof opts.canvas === "string" ? document.querySelector(opts.canvas) : opts.canvas;
+    if (!canvas || typeof canvas.transferControlToOffscreen !== "function") return null;
+
+    var o = mergeOptions(opts);
+    // Both sides have to agree on the seed, and the page is asked for it
+    // first, so `rndSeed` is readable the moment create() returns rather than
+    // a message later.
+    if (o.seed == null) o.seed = (Math.random() * 0x7fffffff) | 0;
+
+    var worker;
+    try {
+      worker = new Worker(o.workerUrl || workerBlobUrl());
+    } catch (err) {
+      // Typically a Content-Security-Policy refusing blob: workers.
+      warn("could not start the render worker, falling back to the page", err);
+      return null;
+    }
+
+    var dpr = Math.min(window.devicePixelRatio || 1, Math.max(1, o.maxDpr));
+    var offscreen;
+    try {
+      offscreen = canvas.transferControlToOffscreen();
+    } catch (err) {
+      // Already transferred — this canvas belongs to another instance.
+      worker.terminate();
+      warn("this canvas is already driven by another instance", canvas);
+      return null;
+    }
+
+    canvas.style.imageRendering = "pixelated";
+
+    // An explicit `size` is already in output pixels and means the caller does
+    // not want the element measured — same contract as on the page.
+    function box() {
+      if (o.size) return { w: Math.max(1, o.size.w), h: Math.max(1, o.size.h) };
+      var rect = canvas.getBoundingClientRect();
+      return {
+        w: Math.max(1, Math.round((rect.width || 640) * dpr)),
+        h: Math.max(1, Math.round((rect.height || 360) * dpr))
+      };
+    }
+
+    // The worker gets the options with the page's half removed: the element is
+    // gone, and the frame-by-frame decisions below stay on this side.
+    var sent = {};
+    for (var k in o) {
+      if (k === "canvas" || k === "worker" || k === "workerUrl" || k === "size") continue;
+      sent[k] = o[k];
+    }
+    sent.autoplay = false;
+    sent.respectReducedMotion = false;
+
+    var proxy = {
+      canvas: canvas,
+      o: o,
+      rndSeed: o.seed,
+      running: false,
+      usesWorker: true,
+      worker: worker,
+      gw: 0, gh: 0, cell: 0
+    };
+
+    worker.onmessage = function (event) {
+      var msg = event.data;
+      if (msg.type === "ready") {
+        proxy.gw = msg.gw; proxy.gh = msg.gh; proxy.cell = msg.cell;
+      } else if (msg.type === "error") {
+        warn("the render worker reported: " + msg.message, null);
+      }
+    };
+
+    worker.postMessage({ type: "init", canvas: offscreen, options: sent, size: box() }, [offscreen]);
+
+    function send(method) {
+      var args = [].slice.call(arguments, 1);
+      worker.postMessage({ type: "call", method: method, args: args });
+    }
+
+    proxy.play = function () { proxy.running = true; send("play"); return proxy; };
+    proxy.pause = function () { proxy.running = false; send("pause"); return proxy; };
+    proxy.seek = function (seconds) { send("seek", seconds); return proxy; };
+    proxy.setRamp = function (ramp) { o.ramp = ramp; send("setRamp", ramp); return proxy; };
+    proxy.setOption = function (key, value) {
+      o[key] = value;
+      send("setOption", key, value);
+      return proxy;
+    };
+    proxy.reseed = function (seed) {
+      proxy.rndSeed = o.seed = seed == null ? (Math.random() * 0x7fffffff) | 0 : seed | 0;
+      send("reseed", proxy.rndSeed);
+      return proxy;
+    };
+    proxy.setSize = function (w, h) { worker.postMessage({ type: "size", size: { w: w, h: h } }); return proxy; };
+
+    var onResize = function () { worker.postMessage({ type: "size", size: box() }); };
+    var onVis = function () { worker.postMessage({ type: "visible", visible: !document.hidden }); };
+    if (!o.size) window.addEventListener("resize", onResize);
+    document.addEventListener("visibilitychange", onVis);
+
+    var io = null;
+    if (typeof IntersectionObserver === "function") {
+      io = new IntersectionObserver(function (entries) {
+        worker.postMessage({ type: "visible", visible: entries[0].isIntersecting });
+      }, { threshold: 0 });
+      io.observe(canvas);
+    }
+
+    proxy.destroy = function () {
+      proxy.running = false;
+      if (!o.size) window.removeEventListener("resize", onResize);
+      document.removeEventListener("visibilitychange", onVis);
+      if (io) io.disconnect();
+      unmount(proxy);
+      send("destroy");
+      worker.terminate();
+      return proxy;
+    };
+
+    // The page still decides whether to play: reduced motion is a media query,
+    // and media queries live here.
+    var reduced = o.respectReducedMotion &&
+      window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduced) proxy.seek(o.loopSeconds * 0.25);
+    else if (o.autoplay) proxy.play();
+
+    return proxy;
+  }
+
   /* -------------------------------------------------------------- exports */
 
-  return {
-    create: function (opts) { return new BitMotionInstance(opts); },
+  var api = {
+    create: createInstance,
+    // Called by a worker script: `importScripts(".../bitmotion.js")` then
+    // `BitMotion.startWorker()`. Does nothing useful on a page.
+    startWorker: function () { workerBoot(api); },
+    init: init,
+    get: function (target) {
+      var els = toElements(target);
+      return els.length ? mountedFor(els[0]) : null;
+    },
+    destroyAll: function () {
+      while (mounted.length) mounted[0].instance.destroy();
+    },
     RAMPS: RAMPS,
+    // Every option name, so a wrapper can tell an option from a prop of its
+    // own without keeping its own copy of the list.
+    OPTIONS: Object.keys(DEFAULTS),
     BACKGROUNDS: BACKGROUNDS,
     ORIGINS: ORIGINS,
     SCENES: SCENE_NAMES,
     COLORS: HS,
     hexToRgb: hexToRgb
   };
+  return api;
 });

@@ -40,6 +40,12 @@
     6. Paper-coloured cells are written with alpha 0, so the canvas is
        genuinely transparent and inherits whatever is behind it. Nothing needs
        to be #FAF8F7 for this to work — that is just where it was tuned.
+    7. This page has nothing else moving on it, so the render has the main
+       thread to itself. On a page where it does not — a menu that slides, an
+       accordion, anything transitioning a non-composited property — add
+       `worker: true` and `fps: 30`: the first moves the whole pipeline onto
+       an OffscreenCanvas in a worker, the second makes the cap a cadence the
+       display can actually meet. See Performance in README.md.
 -->
 
 <style>
@@ -130,6 +136,14 @@
     the 50ms long-task threshold.
   </p>
 </main>
+
+<!--
+  Markup-only alternative, if you would rather not write the script at all —
+  every [data-bitmotion] element is mounted once the DOM is ready:
+
+    <canvas data-bitmotion='{"cellSize":3,"maxCells":200000,"seed":1834027461}'
+            data-bitmotion-scene="drift"></canvas>
+-->
 
 <script src="bitmotion.js"></script>
 <script>
