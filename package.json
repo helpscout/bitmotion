@@ -30,6 +30,12 @@
       "types": "./bitmotion.d.ts",
       "default": "./bitmotion.js"
     },
+    "./react": {
+      "types": "./react.d.ts",
+      "import": "./react.mjs",
+      "require": "./react.cjs",
+      "default": "./react.cjs"
+    },
     "./export": {
       "types": "./bitmotion-export.d.ts",
       "default": "./bitmotion-export.js"
@@ -42,10 +48,21 @@
     "bitmotion.d.ts",
     "bitmotion-export.js",
     "bitmotion-export.d.ts",
+    "react.cjs",
+    "react.mjs",
+    "react.d.ts",
     "README.md"
   ],
   "scripts": {
-    "test": "node test/smoke.mjs"
+    "test": "node test/smoke.mjs && node test/react.mjs"
+  },
+  "peerDependencies": {
+    "react": ">=17"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
   },
   "publishConfig": {
     "access": "restricted"

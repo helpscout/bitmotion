@@ -129,6 +129,8 @@ declare namespace BitMotion {
     /** Destroy every instance `init` mounted. */
     destroyAll(): void;
 
+    /** Every option name, in declaration order. */
+    readonly OPTIONS: Array<keyof Options>;
     readonly RAMPS: Record<RampName, RampStops>;
     readonly BACKGROUNDS: Record<BackgroundName, string>;
     readonly ORIGINS: Record<OriginName, [number, number]>;

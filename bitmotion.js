@@ -1836,6 +1836,9 @@
       while (mounted.length) mounted[0].instance.destroy();
     },
     RAMPS: RAMPS,
+    // Every option name, so a wrapper can tell an option from a prop of its
+    // own without keeping its own copy of the list.
+    OPTIONS: Object.keys(DEFAULTS),
     BACKGROUNDS: BACKGROUNDS,
     ORIGINS: ORIGINS,
     SCENES: SCENE_NAMES,

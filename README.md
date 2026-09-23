@@ -52,8 +52,9 @@ to mount and `window` is never touched.
 | `embed-example.html` | Reference | A complete working hero, configured the way it should ship. Copy the pattern, not the file. |
 | `index.html` | **No** | Playground for choosing a look and exporting previews. Internal tool. The Field, Quantiser and Cell-ceiling controls are commented out in the markup rather than deleted — the JS checks for each element before binding, so putting one back is a markup-only edit. |
 | `bitmotion-export.js` | **No** | GIF / video / PNG-sequence encoders for the playground. Has no place on a production page — it roughly doubles the payload for something a visitor never uses. |
-| `package.json`, `bitmotion.d.ts`, `bitmotion-export.d.ts` | Packaging | npm metadata and TypeScript declarations. The `files` field is what ships: the two runtime files, their types and this README. |
-| `test/smoke.mjs` | **No** | `npm test`. Stands up the smallest DOM the engine touches and drives the mount layer against it — attribute parsing, precedence, containers, idempotency, teardown. Not a pixel test. |
+| `react.cjs`, `react.mjs` | **Yes**, for React | The React wrapper, `@helpscout/bitmotion/react`. `react.cjs` is the implementation; `react.mjs` is an ESM view of it, so there is only ever one copy. Imports `react`, nothing else. |
+| `package.json`, `bitmotion.d.ts`, `bitmotion-export.d.ts`, `react.d.ts` | Packaging | npm metadata and TypeScript declarations. The `files` field is what ships: the two runtime files, their types and this README. |
+| `test/` | **No** | `npm test`. `dom.mjs` stands up the smallest DOM the engine touches; `smoke.mjs` drives the mount layer against it (attribute parsing, precedence, containers, idempotency, teardown) and `react.mjs` drives the component with a miniature React, since the repo installs nothing. Not a pixel test. |
 | `mask-test.html` | **No** | Scratch harness: paints the falloff mask on its own — no field, no ramp, no dither — as a 3×3 grid of the nine anchors, with live `falloff` / `inset` / `morph` / phase sliders. The silhouette and its gradient are hard to judge through the artwork, and impossible to judge through the dither; this shows the mask itself. Reach for it before touching anything in `_maskParams` or `_prepMask`. |
 
 ## Running it
@@ -147,6 +148,47 @@ Three calls manage what the markup started:
 
 In a SPA that means `BitMotion.init()` after render and `destroyAll()` on
 teardown.
+
+### React
+
+```jsx
+import BitMotionCanvas from "@helpscout/bitmotion/react";
+
+<BitMotionCanvas
+  scene="drift"
+  cellSize={3}
+  maxCells={200000}
+  seed={1834027461}
+  className="hero"
+  style={{ width: "100%", height: 460 }}
+/>
+```
+
+Every engine option is a prop. Anything that is not an option — `className`,
+`style`, `id`, `aria-*`, event handlers — lands on the `<canvas>` untouched,
+and `ref` gives you that canvas. React is a peer dependency, and this is the
+only part of the package that imports it.
+
+The engine is resolved once per page no matter how many canvases mount, and a
+`window.BitMotion` already on the page (from a `<script>` tag) is used in
+preference to the bundled copy, so a page can never end up running two.
+`getBitMotion()` is exported if you need the engine imperatively.
+
+Changing a prop updates the running instance in place — `setOption` for most
+of them, `reseed` for `seed`. Only `size`, `grid` and `maxCell` rebuild the
+instance, because they are read while the grid is being laid out. A prop you
+stop passing keeps its last value: React cannot know what it should revert to.
+
+Two props are the component's own:
+
+| Prop | What it does |
+| --- | --- |
+| `paused` | Play state after mount. Leave it off to let `autoplay` decide and drive the instance yourself. |
+| `onReady` | Called once with the instance, for imperative work — `seek`, or holding it for later. |
+
+Mounting starts the animation and unmounting destroys it, so a route change
+releases the resize listener and the IntersectionObserver with no teardown code
+of your own.
 
 ### Picking a look
 
@@ -607,9 +649,10 @@ independent decoders.
 
 ## Verification
 
-`npm test` runs the headless smoke test — it builds the small DOM the engine
-actually touches and drives the mount layer through it, so the markup path,
-option precedence and teardown are covered on every change. The rest of the
+`npm test` runs the headless tests — they build the small DOM the engine
+actually touches and drive the mount layer and the React wrapper through it, so
+the markup path, option precedence, prop updates and teardown are covered on
+every change. The rest of the
 list below was measured in a browser and is current as of the last change:
 
 - **Loop closure is exact.** 0 cells differ between t=0 and t=`loopSeconds`

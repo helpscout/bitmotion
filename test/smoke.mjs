@@ -1,78 +1,20 @@
 /**
- * Headless smoke test — `npm test`.
+ * Headless smoke test for the engine — `npm test`.
  *
- * BitMotion is browser-only, so the test stands up the smallest DOM the engine
- * actually touches (a canvas, a 2D context, a few window globals) and drives
- * the real code against it. That is enough to cover the mount layer end to
- * end: attribute parsing, precedence, containers, idempotency and teardown.
- * It is not a pixel test — the rendering itself is checked by eye in the
- * playground.
+ * It drives the real code against the small DOM in dom.mjs. That covers the
+ * mount layer end to end: attribute parsing, precedence, containers,
+ * idempotency and teardown. It is not a pixel test — the rendering itself is
+ * checked by eye in the playground.
  */
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { document, element, test, run } from "./dom.mjs";
 
 const require = createRequire(import.meta.url);
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-
-/* ------------------------------------------------------------- fake DOM */
-
-const ctx = {
-  fillStyle: "",
-  imageSmoothingEnabled: true,
-  clearRect() {},
-  fillRect() {},
-  drawImage() {},
-  putImageData() {},
-  createImageData: (w, h) => ({ width: w, height: h, data: new Uint8ClampedArray(w * h * 4) })
-};
-
-class FakeElement {
-  constructor(tagName, attrs = {}) {
-    this.nodeType = 1;
-    this.tagName = tagName.toUpperCase();
-    this._attrs = new Map(Object.entries(attrs));
-    this.style = {};
-    this.children = [];
-    this.ownerDocument = null;
-  }
-  get attributes() {
-    return [...this._attrs].map(([name, value]) => ({ name, value }));
-  }
-  getAttribute(n) { return this._attrs.has(n) ? this._attrs.get(n) : null; }
-  setAttribute(n, v) { this._attrs.set(n, String(v)); }
-  hasAttribute(n) { return this._attrs.has(n); }
-  appendChild(child) { child.ownerDocument = this.ownerDocument; this.children.push(child); return child; }
-  getBoundingClientRect() { return { width: 320, height: 180 }; }
-  getContext() { return ctx; }
-}
-
-const page = [];
-const document = {
-  readyState: "complete",
-  hidden: false,
-  addEventListener() {},
-  removeEventListener() {},
-  createElement(tag) {
-    const el = new FakeElement(tag);
-    el.ownerDocument = document;
-    return el;
-  },
-  // Only one selector is ever asked for here, so matching is by attribute.
-  querySelectorAll(selector) {
-    assert.equal(selector, "[data-bitmotion]", "unexpected selector: " + selector);
-    return page.filter((el) => el.hasAttribute("data-bitmotion"));
-  }
-};
-
-function element(tag, attrs) {
-  const el = new FakeElement(tag, attrs);
-  el.ownerDocument = document;
-  page.push(el);
-  return el;
-}
 
 // The canvas the engine auto-mounts on import, so the DOM-ready path is
 // covered too rather than only explicit init() calls.
@@ -84,20 +26,7 @@ const auto = element("canvas", {
   "data-bitmotion-autoplay": "false"
 });
 
-globalThis.document = document;
-globalThis.window = {
-  document,
-  devicePixelRatio: 1,
-  addEventListener() {},
-  removeEventListener() {}
-};
-globalThis.requestAnimationFrame = () => 1;
-globalThis.cancelAnimationFrame = () => {};
-
 /* ------------------------------------------------------------ the tests */
-
-const tests = [];
-const test = (name, fn) => tests.push([name, fn]);
 
 const BitMotion = require(path.join(root, "bitmotion.js"));
 
@@ -212,17 +141,4 @@ test("every file the package ships is present", () => {
   }
 });
 
-/* ---------------------------------------------------------------- runner */
-
-let failed = 0;
-for (const [name, fn] of tests) {
-  try {
-    fn();
-    console.log("  ok   " + name);
-  } catch (err) {
-    failed++;
-    console.log("  FAIL " + name + "\n       " + (err && err.message));
-  }
-}
-console.log(failed ? `\n${failed} of ${tests.length} failed` : `\n${tests.length} passed`);
-process.exit(failed ? 1 : 0);
+run("engine");
