@@ -540,6 +540,11 @@
                            // being clipped by it. This is what keeps an
                            // exported frame from touching its own edges.
     seed: null,            // integer for a reproducible sequence
+    onFirstFrame: null,    // called once with the instance, as soon as there
+                           // is artwork on the canvas. On the page that is
+                           // inside create(); in a worker it is a message
+                           // later, which is the difference anything fading
+                           // the canvas in has to wait for.
     worker: false,         // true renders in a worker, off the main thread
     workerUrl: null,       // a worker file to use instead of the built-in
                            // blob — the escape hatch for a strict CSP. See
@@ -621,6 +626,11 @@
     if (reduced) this._render(o.loopSeconds * 0.25);
     else if (o.autoplay) this.play();
     else this._render(0);
+
+    // Every branch above has drawn a frame, so the canvas is no longer blank.
+    // The instance goes with it because the caller does not have the return
+    // value yet.
+    if (typeof o.onFirstFrame === "function") o.onFirstFrame(this);
   }
 
   BitMotionInstance.prototype.setRamp = function (ramp) {
@@ -2074,6 +2084,9 @@
     var sent = {};
     for (var k in o) {
       if (k === "canvas" || k === "worker" || k === "workerUrl" || k === "size") continue;
+      // A callback cannot be structured-cloned — postMessage would throw —
+      // and every one of them belongs to this side anyway.
+      if (typeof o[k] === "function") continue;
       sent[k] = o[k];
     }
     sent.autoplay = false;
@@ -2093,6 +2106,9 @@
       var msg = event.data;
       if (msg.type === "ready") {
         proxy.gw = msg.gw; proxy.gh = msg.gh; proxy.cell = msg.cell;
+        // The worker draws its first frame as it starts up, so this message
+        // is also the moment the canvas stopped being blank.
+        if (typeof o.onFirstFrame === "function") o.onFirstFrame(proxy);
       } else if (msg.type === "error") {
         warn("the render worker reported: " + msg.message, null);
       }

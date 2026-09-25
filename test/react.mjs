@@ -13,7 +13,7 @@ import Module from "node:module";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { FakeElement, document, test, run } from "./dom.mjs";
+import { FakeElement, document, flushFrames, test, run } from "./dom.mjs";
 
 const require = createRequire(import.meta.url);
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -56,7 +56,11 @@ const React = {
       const value = typeof next === "function" ? next(slot.value) : next;
       if (Object.is(value, slot.value)) return;
       slot.value = value;
-      root.dirty = true;
+      // Inside a render pass the loop below picks it up; from outside one — a
+      // timer, a frame, a message — React would schedule a re-render, so this
+      // does too.
+      if (root.rendering) root.dirty = true;
+      else root.render(root.props);
     }];
   },
   useEffect(fn, deps) {
@@ -84,6 +88,7 @@ class Root {
   }
   render(props) {
     this.props = props;
+    this.rendering = true;
     let guard = 0;
     do {
       this.dirty = false;
@@ -108,6 +113,7 @@ class Root {
       }
       if (++guard > 10) throw new Error("render loop did not settle");
     } while (this.dirty);
+    this.rendering = false;
     return this;
   }
   unmount() {
@@ -181,7 +187,75 @@ test("option props stay off the canvas, everything else lands on it", () => {
   const root = mount(BitMotionCanvas, {
     scene: "bloom", autoplay: false, className: "hero", id: "art", "aria-hidden": "true"
   });
-  assert.deepEqual(root.node.props, { className: "hero", id: "art", "aria-hidden": "true" });
+  assert.deepEqual(root.node.props, {
+    className: "hero", id: "art", "aria-hidden": "true", "data-state": "loading"
+  });
+  root.unmount();
+});
+
+test("the canvas reports whether it has artwork on it yet", () => {
+  const root = mount(BitMotionCanvas, { autoplay: false });
+  assert.equal(root.node.props["data-state"], "loading");
+  flushFrames();
+  assert.equal(root.node.props["data-state"], "ready");
+  root.unmount();
+});
+
+test("fadeIn holds the canvas at zero until the first frame is on it", () => {
+  const root = mount(BitMotionCanvas, { autoplay: false, fadeIn: true });
+  assert.equal(root.node.props.style.opacity, 0, "nothing to see yet");
+  assert.equal(root.node.props.style.transition, undefined, "and nothing to transition from");
+
+  flushFrames();
+  assert.equal(root.node.props.style.opacity, 1);
+  assert.equal(root.node.props.style.transition, "opacity 400ms ease-out");
+  root.unmount();
+});
+
+test("fadeIn takes a duration, and leaves the rest of the style alone", () => {
+  const root = mount(BitMotionCanvas, {
+    autoplay: false, fadeIn: 900, style: { width: "100%", height: 460 }
+  });
+  flushFrames();
+  assert.equal(root.node.props.style.transition, "opacity 900ms ease-out");
+  assert.equal(root.node.props.style.width, "100%");
+  assert.equal(root.node.props.style.height, 460);
+  assert.equal(root.node.props["data-state"], "ready");
+  root.unmount();
+});
+
+test("without fadeIn the style is untouched", () => {
+  const root = mount(BitMotionCanvas, { autoplay: false, style: { width: "100%" } });
+  flushFrames();
+  assert.deepEqual(root.node.props.style, { width: "100%" });
+  root.unmount();
+});
+
+test("reduced motion gets the end state without the transition", () => {
+  const real = globalThis.window.matchMedia;
+  globalThis.window.matchMedia = (query) => ({ matches: /reduced-motion/.test(query) });
+  try {
+    const root = mount(BitMotionCanvas, { autoplay: false, fadeIn: true });
+    flushFrames();
+    assert.equal(root.node.props.style.opacity, 1, "the canvas still appears");
+    assert.equal(root.node.props.style.transition, undefined, "it just does not fade");
+    root.unmount();
+  } finally {
+    globalThis.window.matchMedia = real;
+  }
+});
+
+test("a rebuild does not fade the canvas in a second time", () => {
+  const t = tracker();
+  const root = mount(BitMotionCanvas, {
+    autoplay: false, fadeIn: true, size: { w: 320, h: 180 }, onReady: t.onReady
+  });
+  flushFrames();
+  assert.equal(root.node.props.style.opacity, 1);
+
+  root.render({ autoplay: false, fadeIn: true, size: { w: 640, h: 360 }, onReady: t.onReady });
+  assert.equal(t.seen.length, 2, "the instance should have been rebuilt");
+  assert.equal(root.node.props.style.opacity, 1, "and the canvas should not blink");
   root.unmount();
 });
 

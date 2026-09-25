@@ -184,12 +184,28 @@ to.
 `worker` is a prop like any other, so a component that shares a page with
 animated UI is `<BitMotionCanvas worker fps={30} … />`.
 
-Two props are the component's own:
+Three props are the component's own:
 
 | Prop | What it does |
 | --- | --- |
+| `fadeIn` | Hold the canvas at opacity 0 until there is artwork on it, then transition it in. `fadeIn` fades over 400ms, `fadeIn={900}` sets the duration. |
 | `paused` | Play state after mount. Leave it off to let `autoplay` decide and drive the instance yourself. |
 | `onReady` | Called once with the instance, for imperative work — `seek`, or holding it for later. |
+
+`fadeIn` exists because "finished loading" is not the same moment on both
+paths: on the page the first frame is painted inside `create()`, but with
+`worker: true` the canvas is genuinely blank until the worker reports back, and
+a canvas that pops in is the part people notice. The engine's `onFirstFrame`
+option is the underlying signal, and it fires at the right moment either way.
+
+Under `prefers-reduced-motion` the canvas appears without the transition. The
+canvas also carries `data-state="loading" | "ready"` whether or not `fadeIn` is
+set, so a page can do its own thing in CSS:
+
+```css
+canvas[data-state="loading"] { filter: blur(8px); }
+canvas[data-state="ready"]   { filter: none; transition: filter 600ms; }
+```
 
 Mounting starts the animation and unmounting destroys it, so a route change
 releases the resize listener and the IntersectionObserver with no teardown code
@@ -416,6 +432,7 @@ not a flag. Not implemented here.
 | `fps` | `20` | Frame cap. Met exactly when it divides the display's refresh rate — 20 and 30 both do on 60Hz. Use `30` next to anything animated. |
 | `upscale` | `"canvas"` | `"css"` makes the backing store the grid and lets the compositor scale it: ~16× less to upload per frame, at the cost of the odd block landing a device pixel wider. See [Sharing a page with CSS transitions](#sharing-a-page-with-css-transitions). |
 | `worker` | `false` | `true` renders in a worker through OffscreenCanvas, taking the main-thread cost to zero. Falls back to the page where that is unavailable. |
+| `onFirstFrame` | `null` | Called once with the instance, as soon as there is artwork on the canvas — inside `create()` on the page, a message later in worker mode. What to wait for before fading a canvas in. |
 | `workerUrl` | `null` | A worker file to use instead of the built-in blob, for pages whose CSP refuses `blob:` workers. |
 
 ### Look

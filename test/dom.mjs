@@ -74,8 +74,19 @@ globalThis.window = {
   addEventListener() {},
   removeEventListener() {}
 };
-globalThis.requestAnimationFrame = () => 1;
-globalThis.cancelAnimationFrame = () => {};
+// Frames are queued rather than fired, so a test says when one happens.
+const frames = new Map();
+let nextFrame = 1;
+globalThis.requestAnimationFrame = (fn) => { frames.set(nextFrame, fn); return nextFrame++; };
+globalThis.cancelAnimationFrame = (id) => { frames.delete(id); };
+
+/** Runs the frames queued right now; anything they queue waits for the next call. */
+export function flushFrames() {
+  const due = [...frames.entries()];
+  for (const [id] of due) frames.delete(id);
+  for (const [, fn] of due) fn(performance.now());
+  return due.length;
+}
 
 /* ---------------------------------------------------------------- runner */
 

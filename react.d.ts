@@ -11,6 +11,14 @@ declare namespace BitMotionReact {
     extends OptionProps,
       Omit<CanvasHTMLAttributes<HTMLCanvasElement>, keyof OptionProps | "ref"> {
     /**
+     * Hold the canvas at opacity 0 until there is artwork on it, then
+     * transition it in. `true` fades over 400ms; a number sets the duration in
+     * milliseconds. Under `prefers-reduced-motion` the canvas appears without
+     * the transition. The canvas carries `data-state="loading" | "ready"`
+     * either way, for a page that would rather do this in CSS.
+     */
+    fadeIn?: boolean | number;
+    /**
      * Play state after mount. Leave it off to let `autoplay` decide and drive
      * the instance yourself.
      */

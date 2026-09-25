@@ -86,6 +86,12 @@ declare namespace BitMotion {
     /** Integer for a reproducible composition. */
     seed?: number | null;
     /**
+     * Called once, as soon as there is artwork on the canvas: inside
+     * `create()` on the page, a message later in worker mode. This is what
+     * anything fading the canvas in should wait for.
+     */
+    onFirstFrame?: ((instance: Instance) => void) | null;
+    /**
      * Render in a worker, off the main thread, via OffscreenCanvas. Falls
      * back to rendering on the page where that is unavailable.
      */

@@ -157,6 +157,22 @@ test("an uncapped instance draws on every display frame", () => {
   assert.ok(measured > 59, "drew " + measured.toFixed(1) + " frames a second");
 });
 
+test("onFirstFrame fires once, with artwork already on the canvas", () => {
+  const el = element("canvas", {});
+  const seen = [];
+  const instance = BitMotion.create({
+    canvas: el, autoplay: false, cellSize: 8,
+    onFirstFrame: (bm) => seen.push([bm, el.ctx.calls.drawImage])
+  });
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0][0], instance, "it hands over the instance the caller does not have yet");
+  assert.ok(seen[0][1] >= 1, "a frame should already have been drawn");
+
+  instance.seek(2);
+  assert.equal(seen.length, 1, "later frames are not first frames");
+  instance.destroy();
+});
+
 test("upscale css draws the grid straight into a grid-sized canvas", () => {
   const el = element("canvas", {});
   const instance = BitMotion.create({ canvas: el, autoplay: false, cellSize: 4, upscale: "css" });

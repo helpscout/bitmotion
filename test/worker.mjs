@@ -54,16 +54,18 @@ function spawnWorker(source) {
     clearTimeout: () => {}
   });
   vm.runInContext(source, context);
-  return {
+  const bridge = {
     self,
     outbox,
-    deliver: (msg) => self.onmessage({ data: msg }),
+    lastInit: null,
+    deliver: (msg) => { if (msg.type === "init") bridge.lastInit = msg; return self.onmessage({ data: msg }); },
     tick: () => {
       const due = timers.splice(0);
       for (const timer of due) { clock += timer.delay; timer.fn(); }
       return due.length;
     }
   };
+  return bridge;
 }
 
 /* ------------------------------------------ the page side of the bridge */
@@ -161,6 +163,30 @@ test("the worker paints the canvas the page handed over", () => {
     assert.equal(built.bridge.tick(), 1, "the loop should have scheduled exactly one frame");
     assert.ok(offscreen.ctx.calls.drawImage > before, "the timer frame should have drawn");
 
+    instance.destroy();
+  });
+});
+
+test("onFirstFrame waits for the worker, and never crosses to it", () => {
+  withFakeWorker((built) => {
+    const canvas = transferableCanvas();
+    const seen = [];
+    let posted = null;
+    // Catch what the page actually sends: a function among the options would
+    // throw DataCloneError in a real browser, where this is a structured clone.
+    const bridge = built;
+    const instance = BitMotion.create({
+      canvas, worker: true, autoplay: false, cellSize: 4,
+      onFirstFrame: (bm) => { seen.push(bm); posted = bridge.bridge.lastInit; }
+    });
+
+    assert.equal(seen.length, 1, "the worker reported its first frame");
+    assert.equal(seen[0], instance, "and the handle is what the page holds");
+    for (const key in posted.options) {
+      assert.notEqual(typeof posted.options[key], "function",
+        key + " would not survive a structured clone");
+    }
+    assert.ok(!("onFirstFrame" in posted.options));
     instance.destroy();
   });
 });
