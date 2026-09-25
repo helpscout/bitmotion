@@ -1,6 +1,6 @@
 {
   "name": "@helpscout/bitmotion",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Live Bitmaker-style dithered motion graphics for the web. Canvas 2D only — no dependencies, no assets, no network.",
   "keywords": [
     "canvas",
